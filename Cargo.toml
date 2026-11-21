@@ -1,0 +1,31 @@
+[package]
+name = "imetap"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Tray tool that switches input methods with hotkeys, toggles Chinese/English with a Ctrl double-tap, and shows a HUD on every change."
+repository = "https://github.com/cychen2021/imetap"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.9", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.2.2"
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_TextServices", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_IO", "Win32_Security", "Win32_System_Variant", "Win32_System_Ole", "Win32_System_Console"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.5"
+objc2-app-kit = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "objc2-core-graphics"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
