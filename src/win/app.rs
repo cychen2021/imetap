@@ -37,12 +37,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CallNextHookEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
     DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, FindWindowW, GetCursorPos,
     GetMessageW, HHOOK, HICON, ICONINFO, KBDLLHOOKSTRUCT, KillTimer, MF_CHECKED, MF_SEPARATOR,
-    MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOWNORMAL,
-    SetForegroundWindow, SetTimer, SetWindowsHookExW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WNDCLASSEXW, WS_OVERLAPPED,
+    MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
+    SW_SHOWNORMAL, SetForegroundWindow, SetTimer, SetWindowsHookExW, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+    WH_MOUSE_LL, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WNDCLASSEXW, WS_OVERLAPPED,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -106,6 +106,8 @@ thread_local! {
     // The hooks touch only these two, so a hook can never collide with a borrow of `APP`.
     static TAP: RefCell<TapDetector> = RefCell::new(TapDetector::default());
     static MAIN: Cell<isize> = const { Cell::new(0) };
+    /// The id of the `TaskbarCreated` broadcast, sent when Explorer (re)starts its taskbar.
+    static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Runs the tool until the user quits from the tray menu.
@@ -142,6 +144,8 @@ pub fn run(config: Config) -> Result<()> {
             tray_icon: None,
         })
     });
+    // SAFETY: registers a window message by name.
+    TASKBAR_CREATED.with(|m| m.set(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) }));
     add_tray(hwnd);
     send(Job::Probe);
 
@@ -637,6 +641,12 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // At login this tool may start before the taskbar exists; the icon is added again when it appears.
+    if message != 0 && message == TASKBAR_CREATED.with(Cell::get) {
+        let last = APP.with(|a| a.borrow().as_ref().and_then(|app| app.last));
+        update_tray(hwnd, last, true);
+        return LRESULT(0);
+    }
     match message {
         WM_HOTKEY => {
             if let Some(ime) = HOTKEY_IMES.get(wparam.0) {

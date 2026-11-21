@@ -19,7 +19,7 @@ pub enum Ime {
 }
 
 impl Ime {
-    /// The name used on the command line and in the HUD caption.
+    /// The English name, used in messages.
     pub fn name(self) -> &'static str {
         match self {
             Ime::Us => "US keyboard",
@@ -27,6 +27,16 @@ impl Ime {
             Ime::Doubao => "Doubao",
             Ime::Shuangpin => "Shuangpin",
             Ime::Other => "Other",
+        }
+    }
+
+    /// The name shown on the HUD: the Chinese input methods under their Chinese names.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Ime::Pinyin => "微软拼音",
+            Ime::Doubao => "豆包",
+            Ime::Shuangpin => "双拼",
+            Ime::Us | Ime::Other => self.name(),
         }
     }
 
@@ -70,10 +80,10 @@ impl Snapshot {
     /// The small text under the glyph.
     pub fn caption(&self) -> String {
         match (self.ime, self.chinese) {
-            (Ime::Us | Ime::Other, _) => self.ime.name().to_string(),
-            (ime, Some(true)) => format!("{} · Chinese", ime.name()),
-            (ime, Some(false)) => format!("{} · English", ime.name()),
-            (ime, None) => ime.name().to_string(),
+            (Ime::Us | Ime::Other, _) => self.ime.display_name().to_string(),
+            (ime, Some(true)) => format!("{} · 中文", ime.display_name()),
+            (ime, Some(false)) => format!("{} · English", ime.display_name()),
+            (ime, None) => ime.display_name().to_string(),
         }
     }
 }
@@ -91,15 +101,9 @@ mod tests {
     #[test]
     fn glyph_and_caption_follow_the_mode() {
         let s = Snapshot::new(Ime::Pinyin, Some(true));
-        assert_eq!(
-            (s.glyph(), s.caption().as_str()),
-            ("中", "Microsoft Pinyin · Chinese")
-        );
+        assert_eq!((s.glyph(), s.caption().as_str()), ("中", "微软拼音 · 中文"));
         let s = Snapshot::new(Ime::Doubao, Some(false));
-        assert_eq!(
-            (s.glyph(), s.caption().as_str()),
-            ("EN", "Doubao · English")
-        );
+        assert_eq!((s.glyph(), s.caption().as_str()), ("EN", "豆包 · English"));
     }
 
     #[test]
@@ -111,7 +115,7 @@ mod tests {
     #[test]
     fn an_unknown_mode_falls_back_to_the_name() {
         let s = Snapshot::new(Ime::Shuangpin, None);
-        assert_eq!((s.glyph(), s.caption().as_str()), ("中", "Shuangpin"));
+        assert_eq!((s.glyph(), s.caption().as_str()), ("中", "双拼"));
     }
 
     #[test]

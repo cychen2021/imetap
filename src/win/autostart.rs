@@ -1,6 +1,13 @@
-//! "Run at login": a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+//! "Run at login".
+//!
+//! Windows holds back `Run` entries (and the Startup folder) until the desktop has settled, which on
+//! a busy login can take minutes. A scheduled logon task starts right at logon, but creating one
+//! needs an elevated terminal. So enabling tries the task first and always also sets the `Run`
+//! value as the fallback; a second instance exits immediately thanks to the single-instance lock.
 
 use std::env;
+use std::os::windows::process::CommandExt;
+use std::process::Command;
 
 use anyhow::Result;
 use windows::Win32::System::Registry::{
@@ -11,9 +18,45 @@ use windows::core::HSTRING;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const VALUE: &str = "imetap";
+const TASK: &str = "imetap";
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Whether the Run entry exists.
+fn schtasks(args: &[&str]) -> bool {
+    Command::new("schtasks")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Whether the logon task exists.
+pub fn task_exists() -> bool {
+    schtasks(&["/Query", "/TN", TASK])
+}
+
+/// Creates the logon task for the current user; fails without elevation.
+fn create_task() -> bool {
+    let (Ok(exe), Ok(user), Ok(domain)) = (
+        env::current_exe(),
+        env::var("USERNAME"),
+        env::var("USERDOMAIN"),
+    ) else {
+        return false;
+    };
+    let command = format!("\"{}\" run", exe.display());
+    let user = format!("{domain}\\{user}");
+    schtasks(&[
+        "/Create", "/TN", TASK, "/TR", &command, "/SC", "ONLOGON", "/RU", &user, "/IT", "/RL",
+        "LIMITED", "/F",
+    ])
+}
+
+/// Whether imetap is set to start at login, by the logon task or the Run entry.
 pub fn is_enabled() -> bool {
+    task_exists() || run_entry_exists()
+}
+
+fn run_entry_exists() -> bool {
     // SAFETY: a size-only query; no output buffer is passed.
     unsafe {
         RegGetValueW(
@@ -29,8 +72,21 @@ pub fn is_enabled() -> bool {
     }
 }
 
-/// Adds or removes the Run entry for the running executable.
-pub fn set(enabled: bool) -> Result<()> {
+/// Enables or disables starting at login. When enabling, returns whether the fast logon task
+/// could be created, which needs an elevated terminal; the Run entry is set either way.
+pub fn set(enabled: bool) -> Result<bool> {
+    if enabled {
+        let task = create_task();
+        set_run_entry(true)?;
+        Ok(task)
+    } else {
+        let _ = schtasks(&["/Delete", "/TN", TASK, "/F"]);
+        set_run_entry(false)?;
+        Ok(false)
+    }
+}
+
+fn set_run_entry(enabled: bool) -> Result<()> {
     // SAFETY: the key handle is closed before returning and the data slice outlives the call.
     unsafe {
         let mut key = HKEY::default();

@@ -13,13 +13,15 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetForegroundWindow, HWND_TOPMOST, KillTimer, LWA_ALPHA,
-    RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
-    SetTimer, SetWindowPos, ShowWindow, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DI_NORMAL, DefWindowProcW, DrawIconEx, GetForegroundWindow, HICON,
+    HWND_TOPMOST, KillTimer, LWA_ALPHA, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+    SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, WM_PAINT, WM_TIMER,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
+use super::icons;
 use crate::config::HudConfig;
 use crate::state::Snapshot;
 
@@ -38,6 +40,7 @@ const BOTTOM_MARGIN: i32 = 48;
 
 struct Shown {
     snapshot: Snapshot,
+    icon: Option<HICON>,
     alpha: u8,
     fade_step: u32,
 }
@@ -92,6 +95,7 @@ impl Hud {
         SHOWN.with(|s| {
             *s.borrow_mut() = Some(Shown {
                 snapshot,
+                icon: icons::icon_for(snapshot.ime),
                 alpha,
                 fade_step: 0,
             })
@@ -213,6 +217,20 @@ fn paint(hwnd: HWND) {
                     bottom: px(80),
                 };
                 draw_text(hdc, shown.snapshot.glyph(), glyph, px(60), 600);
+                if let Some(icon) = shown.icon {
+                    // The input method's own icon in the top-left corner.
+                    let _ = DrawIconEx(
+                        hdc,
+                        px(14),
+                        px(12),
+                        icon,
+                        px(26),
+                        px(26),
+                        0,
+                        None,
+                        DI_NORMAL,
+                    );
+                }
                 SetTextColor(hdc, rgb(190, 192, 196));
                 let caption = RECT {
                     left: 0,

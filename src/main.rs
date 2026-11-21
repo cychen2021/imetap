@@ -269,7 +269,14 @@ mod platform {
     }
 
     pub fn set_autostart(enabled: bool) -> Result<()> {
-        autostart::set(enabled)
+        if enabled && !autostart::set(true)? {
+            eprintln!(
+                "note: Windows delays this kind of login entry, sometimes by minutes. Run `imetap autostart enable` once from an elevated terminal to start at logon without the delay."
+            );
+        } else if !enabled {
+            autostart::set(false)?;
+        }
+        Ok(())
     }
 
     pub fn open(path: &Path) -> Result<()> {
