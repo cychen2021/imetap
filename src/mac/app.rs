@@ -498,7 +498,7 @@ fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
 fn update_status_item(state: &State, snapshot: Snapshot) {
     if let Some(button) = state.status_item.button(state.mtm) {
         button.setTitle(&NSString::from_str(snapshot.glyph()));
-        button.setToolTip(Some(&NSString::from_str(&snapshot.caption())));
+        button.setToolTip(Some(ns_string!("imetap")));
     }
 }
 

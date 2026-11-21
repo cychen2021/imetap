@@ -444,12 +444,10 @@ fn add_tray(hwnd: HWND) {
 }
 
 fn update_tray(hwnd: HWND, snapshot: Option<Snapshot>, add: bool) {
-    let (glyph, tip) = match snapshot {
-        Some(s) => (s.glyph(), format!("imetap: {}", s.caption())),
-        None => ("?", "imetap".to_string()),
-    };
+    // The tooltip is just the tool name: the state is already on the icon and in the input bar.
+    let glyph = snapshot.map_or("?", |s| s.glyph());
     let icon = make_icon(glyph, snapshot);
-    let data = tray_data(hwnd, icon, &tip);
+    let data = tray_data(hwnd, icon, "imetap");
     // SAFETY: `data` is fully initialised for the call.
     unsafe {
         let _ = Shell_NotifyIconW(if add { NIM_ADD } else { NIM_MODIFY }, &data);
