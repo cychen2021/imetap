@@ -62,7 +62,7 @@ impl Snapshot {
             (Ime::Us, _) => "EN",
             (Ime::Other, None) => "?",
             (_, Some(true)) => "中",
-            (_, Some(false)) => "英",
+            (_, Some(false)) => "EN",
             (_, None) => "中",
         }
     }
@@ -98,7 +98,7 @@ mod tests {
         let s = Snapshot::new(Ime::Doubao, Some(false));
         assert_eq!(
             (s.glyph(), s.caption().as_str()),
-            ("英", "Doubao · English")
+            ("EN", "Doubao · English")
         );
     }
 
