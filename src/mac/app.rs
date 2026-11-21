@@ -12,11 +12,11 @@ use anyhow::Result;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AllocAnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSFont, NSMenu,
-    NSMenuItem, NSPanel, NSScreen, NSStatusBar, NSStatusItem, NSTextAlignment, NSTextField,
-    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSFont, NSImage,
+    NSImageView, NSMenu, NSMenuItem, NSPanel, NSScreen, NSStatusBar, NSStatusItem, NSTextAlignment,
+    NSTextField, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
     NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2_foundation::{
@@ -76,6 +76,8 @@ struct Hud {
     panel: Retained<NSPanel>,
     glyph: Retained<NSTextField>,
     caption: Retained<NSTextField>,
+    /// The input method's own icon, top-left.
+    icon: Retained<NSImageView>,
 }
 
 struct State {
@@ -559,6 +561,11 @@ fn make_hud(mtm: MainThreadMarker) -> Hud {
         false,
         &NSColor::lightGrayColor(),
     );
+    let icon = NSImageView::new(mtm);
+    icon.setFrame(NSRect::new(
+        NSPoint::new(14.0, HUD_HEIGHT - 14.0 - 26.0),
+        NSSize::new(26.0, 26.0),
+    ));
     if let Some(view) = panel.contentView() {
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
@@ -569,11 +576,13 @@ fn make_hud(mtm: MainThreadMarker) -> Hud {
         }
         view.addSubview(&glyph);
         view.addSubview(&caption);
+        view.addSubview(&icon);
     }
     Hud {
         panel,
         glyph,
         caption,
+        icon,
     }
 }
 
@@ -594,6 +603,10 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
         .setStringValue(&NSString::from_str(snapshot.glyph()));
     hud.caption
         .setStringValue(&NSString::from_str(&snapshot.caption()));
+    let image = ffi::current_source_icon_path().and_then(|path| {
+        NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&path))
+    });
+    hud.icon.setImage(image.as_deref());
     // The screen of the window with keyboard focus; the first (primary) screen if there is none.
     let screen =
         NSScreen::mainScreen(state.mtm).or_else(|| NSScreen::screens(state.mtm).firstObject());

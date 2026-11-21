@@ -32,6 +32,8 @@ const kCFStringEncodingUTF8: u32 = 0x0800_0100;
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     pub static kTISPropertyInputSourceID: CFStringRef;
+    static kTISPropertyIconImageURL: CFStringRef;
+    fn CFURLCopyFileSystemPath(url: CFTypeRef, path_style: CFIndex) -> CFStringRef;
     pub static kCFRunLoopCommonModes: CFStringRef;
     pub static kAXTrustedCheckOptionPrompt: CFStringRef;
     pub static kCFBooleanTrue: CFTypeRef;
@@ -151,6 +153,31 @@ fn string_of(s: CFStringRef) -> Option<String> {
 fn id_of(source: CFTypeRef) -> Option<String> {
     // SAFETY: `source` is a live TISInputSource; the property is owned by it ("get" rule).
     string_of(unsafe { TISGetInputSourceProperty(source, kTISPropertyInputSourceID) })
+}
+
+/// The path of the image file of the current input source's icon, if it has one.
+pub fn current_source_icon_path() -> Option<String> {
+    // SAFETY: "copy" rule for the source and for the path string; the URL belongs to the source.
+    unsafe {
+        let source = TISCopyCurrentKeyboardInputSource();
+        if source.is_null() {
+            return None;
+        }
+        let url = TISGetInputSourceProperty(source, kTISPropertyIconImageURL);
+        let path = if url.is_null() {
+            None
+        } else {
+            // 0 = kCFURLPOSIXPathStyle
+            let text = CFURLCopyFileSystemPath(url, 0);
+            let path = string_of(text);
+            if !text.is_null() {
+                CFRelease(text);
+            }
+            path
+        };
+        CFRelease(source);
+        path
+    }
 }
 
 /// The identifier of the current keyboard input source.
