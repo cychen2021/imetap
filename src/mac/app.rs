@@ -11,17 +11,19 @@ use std::ptr::{self, NonNull};
 use anyhow::Result;
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Bool};
 use objc2::{AllocAnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSFont, NSImage,
-    NSImageView, NSMenu, NSMenuItem, NSPanel, NSScreen, NSStatusBar, NSStatusItem, NSTextAlignment,
-    NSTextField, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSColor,
+    NSCompositingOperation, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSGraphicsContext, NSImage, NSImageView, NSMenu, NSMenuItem, NSPanel, NSScreen, NSStatusBar,
+    NSStatusItem, NSStringDrawing, NSTextAlignment, NSTextField, NSView,
+    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
     NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    NSString, ns_string,
+    MainThreadMarker, NSAttributedStringKey, NSDictionary, NSNotification, NSObject,
+    NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, ns_string,
 };
 
 use super::ffi::{self, CFMachPortRef, CFRunLoopTimerRef, CGEventRef, CGEventTapProxy};
@@ -38,6 +40,9 @@ const HUD_HEIGHT: f64 = 116.0;
 const HUD_BOTTOM_MARGIN: f64 = 48.0;
 /// `NSStatusWindowLevel`.
 const STATUS_WINDOW_LEVEL: isize = 25;
+
+/// Left inset of the menu header, lined up with the text of the other menu items.
+const HEADER_INSET: f64 = 14.0;
 
 const HOTKEY_IMES: [Ime; 3] = [Ime::Us, Ime::Shuangpin, Ime::Doubao];
 
@@ -85,7 +90,8 @@ struct State {
     config: Config,
     engine: Engine,
     hud: Hud,
-    status_item: Retained<NSStatusItem>,
+    /// Held only to keep the menu bar icon alive.
+    _status_item: Retained<NSStatusItem>,
     last: Option<Snapshot>,
     hotkeys: Vec<(u16, u64, Ime)>,
     hide_timer: Option<CFRunLoopTimerRef>,
@@ -126,7 +132,7 @@ pub fn run(config: Config) -> Result<()> {
             config,
             engine: Engine::new(),
             hud,
-            status_item,
+            _status_item: status_item,
             last: None,
             hotkeys,
             hide_timer: None,
@@ -361,7 +367,6 @@ fn act(action: Action) {
         }
         let snapshot = state.engine.snapshot();
         state.last = Some(snapshot);
-        update_status_item(state, snapshot);
         show_hud(state, snapshot);
     });
 }
@@ -377,9 +382,6 @@ fn probe(show_if_changed: bool) {
         let changed = state.last != Some(snapshot);
         let first = state.last.is_none();
         state.last = Some(snapshot);
-        if changed {
-            update_status_item(state, snapshot);
-        }
         if changed && show_if_changed && !first && state.config.hud.on_window_switch {
             show_hud(state, snapshot);
         }
@@ -468,17 +470,77 @@ fn observe_changes() {
 
 // ---- status item -------------------------------------------------------------------------------
 
+/// The menu bar icon: "中" knocked out of a rounded square, like the Windows tray icon. It is a
+/// template image, so macOS tints it for light and dark menu bars. It never shows the state, since
+/// the system input menu already does.
+fn status_image() -> Retained<NSImage> {
+    const SIZE: f64 = 18.0;
+    let draw = RcBlock::new(|_: NSRect| -> Bool {
+        let square = NSRect::new(NSPoint::new(1.0, 1.0), NSSize::new(SIZE - 2.0, SIZE - 2.0));
+        NSColor::blackColor().setFill();
+        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(square, 4.0, 4.0).fill();
+        if let Some(context) = NSGraphicsContext::currentContext() {
+            context.setCompositingOperation(NSCompositingOperation::DestinationOut);
+        }
+        let font = NSFont::boldSystemFontOfSize(12.5);
+        let color = NSColor::blackColor();
+        // SAFETY: the attribute keys are AppKit constants and the values have the types they expect.
+        let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> = unsafe {
+            NSDictionary::from_slices(
+                &[NSFontAttributeName, NSForegroundColorAttributeName],
+                &[&**font as &AnyObject, &**color as &AnyObject],
+            )
+        };
+        let text = ns_string!("中");
+        // SAFETY: drawing into the image's current graphics context, which AppKit set up.
+        unsafe {
+            let size = text.sizeWithAttributes(Some(&attributes));
+            let origin = NSPoint::new((SIZE - size.width) / 2.0, (SIZE - size.height) / 2.0);
+            text.drawAtPoint_withAttributes(origin, Some(&attributes));
+        }
+        Bool::YES
+    });
+    let image =
+        NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(SIZE, SIZE), false, &draw);
+    image.setTemplate(true);
+    image
+}
+
 fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
     if let Some(button) = item.button(mtm) {
-        button.setTitle(ns_string!("?"));
+        button.setImage(Some(&status_image()));
+        button.setToolTip(Some(ns_string!("imetap")));
     }
     let target: Retained<MenuTarget> = unsafe { msg_send![mtm.alloc::<MenuTarget>(), init] };
     let menu = NSMenu::new(mtm);
+    // A header that names the tool. AppKit greys out a menu item that has no action whatever its
+    // title says, so the header is a plain label shown as the item's view, which also keeps it from
+    // highlighting.
+    let header = NSMenuItem::new(mtm);
+    let name = NSTextField::labelWithString(ns_string!("imetap"), mtm);
+    name.setFont(Some(
+        &NSFont::boldSystemFontOfSize(NSFont::systemFontSize()),
+    ));
+    name.setTextColor(Some(&NSColor::labelColor()));
+    name.sizeToFit();
+    let size = name.frame().size;
+    name.setFrameOrigin(NSPoint::new(HEADER_INSET, 3.0));
+    let view = NSView::initWithFrame(
+        mtm.alloc::<NSView>(),
+        NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(size.width + 2.0 * HEADER_INSET, size.height + 6.0),
+        ),
+    );
+    view.addSubview(&name);
+    header.setView(Some(&view));
+    menu.addItem(&header);
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
     for (title, action) in [
         ("Run at login", sel!(toggleLogin:)),
         ("Open config file", sel!(openConfig:)),
-        ("Quit", sel!(quit:)),
+        ("Quit imetap", sel!(quit:)),
     ] {
         let entry = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(
@@ -495,13 +557,6 @@ fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
     // The menu items hold only weak references to their target.
     std::mem::forget(target);
     item
-}
-
-fn update_status_item(state: &State, snapshot: Snapshot) {
-    if let Some(button) = state.status_item.button(state.mtm) {
-        button.setTitle(&NSString::from_str(snapshot.glyph()));
-        button.setToolTip(Some(ns_string!("imetap")));
-    }
 }
 
 // ---- HUD ---------------------------------------------------------------------------------------
