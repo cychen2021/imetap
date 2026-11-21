@@ -12,7 +12,7 @@ use anyhow::Result;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
-use objc2::{AllocAnyThread, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSColor,
     NSCompositingOperation, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
@@ -617,6 +617,8 @@ fn make_hud(mtm: MainThreadMarker) -> Hud {
         &NSColor::lightGrayColor(),
     );
     let icon = NSImageView::new(mtm);
+    // Template icons (the input methods' menu bar icons) are black; draw them white on the HUD.
+    icon.setContentTintColor(Some(&NSColor::whiteColor()));
     icon.setFrame(NSRect::new(
         NSPoint::new(14.0, HUD_HEIGHT - 14.0 - 26.0),
         NSSize::new(26.0, 26.0),
@@ -658,10 +660,7 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
         .setStringValue(&NSString::from_str(snapshot.glyph()));
     hud.caption
         .setStringValue(&NSString::from_str(&snapshot.caption()));
-    let image = ffi::current_source_icon_path().and_then(|path| {
-        NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&path))
-    });
-    hud.icon.setImage(image.as_deref());
+    hud.icon.setImage(ffi::current_source_icon().as_deref());
     // The screen of the window with keyboard focus; the first (primary) screen if there is none.
     let screen =
         NSScreen::mainScreen(state.mtm).or_else(|| NSScreen::screens(state.mtm).firstObject());
