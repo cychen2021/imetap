@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod config;
+pub mod debug;
 pub mod doubao;
 pub mod fade;
 pub mod hold;

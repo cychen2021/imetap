@@ -29,6 +29,7 @@ use objc2_foundation::{
 use super::ffi::{self, CFMachPortRef, CFRunLoopTimerRef, CGEventRef, CGEventTapProxy};
 use super::{Engine, autostart_enabled, claim_pid, open, set_autostart};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
+use crate::debug;
 use crate::fade::Fade;
 use crate::reminder::{Reminder, now_ms};
 use crate::state::{Color, Ime, Rgb, Snapshot};
@@ -485,10 +486,21 @@ fn act(action: Action) {
             Action::Toggle => state.engine.toggle(),
             Action::Show => Ok(()),
         };
-        if let Err(e) = result {
+        if let Err(e) = &result {
             eprintln!("imetap: {e:#}");
         }
         let snapshot = state.engine.snapshot();
+        debug::log(|| {
+            format!(
+                "action {} error={:?} snapshot={snapshot:?}",
+                match action {
+                    Action::Set(ime) => format!("set {ime:?}"),
+                    Action::Toggle => "toggle".to_string(),
+                    Action::Show => "show".to_string(),
+                },
+                result.as_ref().err().map(|e| format!("{e:#}"))
+            )
+        });
         state.last = Some(snapshot);
         show_hud(state, snapshot);
     });
@@ -505,7 +517,12 @@ fn probe(show_if_changed: bool, force: bool) {
         let changed = state.last != Some(snapshot);
         let first = state.last.is_none();
         state.last = Some(snapshot);
-        if force || (changed && show_if_changed && !first && state.config.hud.on_window_switch) {
+        let show =
+            force || (changed && show_if_changed && !first && state.config.hud.on_window_switch);
+        debug::log(|| {
+            format!("probe force={force} changed={changed} snapshot={snapshot:?} -> show={show}")
+        });
+        if show {
             show_hud(state, snapshot);
         }
     });

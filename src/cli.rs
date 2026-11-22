@@ -240,7 +240,8 @@ mod platform {
 
     use crate::config::Config;
     use crate::daemon_exe;
-    use crate::win::{Engine, app, autostart, debug_log_path, init_com};
+    use crate::debug;
+    use crate::win::{Engine, app, autostart, init_com};
 
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -285,7 +286,7 @@ mod platform {
     pub fn debug_status() -> Option<String> {
         Some(match app::running_debug_log() {
             None => "off (not running)".to_string(),
-            Some(true) => format!("on, logging to {}", debug_log_path().display()),
+            Some(true) => format!("on, logging to {}", debug::log_path().display()),
             Some(false) => "off (set IMETAP_DEBUG=1 before starting to log)".to_string(),
         })
     }
@@ -326,9 +327,13 @@ mod platform {
 
     pub fn attach_console() {}
 
-    /// There is no debug log on macOS.
+    /// Whether the running instance writes the debug log, which `IMETAP_DEBUG` turns on at its start.
     pub fn debug_status() -> Option<String> {
-        None
+        Some(match crate::mac::running_debug_log() {
+            None => "off (not running)".to_string(),
+            Some(true) => format!("on, logging to {}", crate::debug::log_path().display()),
+            Some(false) => "off (set IMETAP_DEBUG=1 before starting to log)".to_string(),
+        })
     }
 
     pub fn engine() -> Engine {

@@ -19,44 +19,6 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 
 use crate::state::{Ime, Snapshot};
 
-/// Whether the environment variable `IMETAP_DEBUG` was set when this process asked first.
-pub fn debug_log_enabled() -> bool {
-    use std::sync::OnceLock;
-
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("IMETAP_DEBUG").is_some())
-}
-
-/// Where the debug log is written.
-pub fn debug_log_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("imetap-debug.log")
-}
-
-/// Appends a line to the debug log when `IMETAP_DEBUG` is set. The message is only built then.
-pub fn debug_log(message: impl FnOnce() -> String) {
-    use std::io::Write;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    if !debug_log_enabled() {
-        return;
-    }
-    let path = debug_log_path();
-    // Start over once it gets big, so that leaving the switch on cannot fill the disk.
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 2_000_000) {
-        let _ = std::fs::remove_file(&path);
-    }
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64());
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{secs:.3} {}", message());
-    }
-}
-
 /// Initialises COM for the calling thread. Every thread that uses the types below needs this.
 pub fn init_com() {
     // SAFETY: called once per thread. A repeated call returns S_FALSE, which is fine.

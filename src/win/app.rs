@@ -48,8 +48,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, w};
 
 use super::hud::{Hud, draw_text};
-use super::{Engine, autostart, debug_log, debug_log_enabled, hotkey, init_com, uia};
+use super::{Engine, autostart, hotkey, init_com, uia};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
+use crate::debug;
 use crate::hold::{HeldKey, KeyHold};
 use crate::reminder::{Reminder, now_ms};
 use crate::state::{Ime, Snapshot, text_field_change};
@@ -307,7 +308,7 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 (true, None)
             };
             if force {
-                debug_log(|| {
+                debug::log(|| {
                     format!(
                         "job {label} window={} error={error:?} snapshot={snapshot:?}",
                         uia::foreground_class()
@@ -315,7 +316,7 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 });
             }
             if check {
-                debug_log(|| {
+                debug::log(|| {
                     format!(
                         "check window={} snapshot={snapshot:?} text_focus={text_focus} focus={focus:?}",
                         uia::foreground_class()
@@ -896,7 +897,7 @@ fn on_outcomes(hwnd: HWND) {
             } else {
                 changed && !first && hud.on_window_switch
             };
-            debug_log(|| {
+            debug::log(|| {
                 format!(
                     "outcome force={} text_focus={} last_text={:?} -> show={wanted}",
                     outcome.force, outcome.text_focus, app.last_text
@@ -925,7 +926,7 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message != 0 && message == DEBUG_QUERY_MESSAGE.with(Cell::get) {
-        return LRESULT(debug_log_enabled() as isize);
+        return LRESULT(debug::enabled() as isize);
     }
     // At login this tool may start before the taskbar exists. The icon is added again when it appears.
     if message != 0 && message == TASKBAR_CREATED.with(Cell::get) {

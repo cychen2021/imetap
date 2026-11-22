@@ -20,6 +20,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::config_path;
 use crate::daemon_exe;
+use crate::debug;
 use crate::state::{Ime, Snapshot};
 
 const SOURCE_US: &str = "com.apple.keylayout.US";
@@ -152,8 +153,8 @@ fn open_lock() -> Result<File> {
 /// Held for the life of the resident process. The OS releases the lock when it exits.
 static INSTANCE: OnceLock<File> = OnceLock::new();
 
-/// Takes the single-instance lock and records this process's PID. Fails if another instance
-/// holds it.
+/// Takes the single-instance lock and records this process's PID, and on a second line whether it
+/// writes the debug log. Fails if another instance holds it.
 pub(crate) fn claim_pid() -> Result<()> {
     let mut file = open_lock()?;
     match file.try_lock() {
@@ -163,14 +164,20 @@ pub(crate) fn claim_pid() -> Result<()> {
     }
     file.set_len(0)?;
     file.rewind()?;
-    write!(file, "{}", std::process::id())?;
+    write!(
+        file,
+        "{}\n{}",
+        std::process::id(),
+        u8::from(debug::enabled())
+    )?;
     file.flush()?;
     let _ = INSTANCE.set(file);
     Ok(())
 }
 
-/// The PID of the running instance: the lock is held, and the file names it.
-fn running_pid() -> Option<u32> {
+/// What the running instance recorded: the lock is held, and the file names its PID and whether it
+/// writes the debug log (an older instance recorded the PID only).
+fn running_instance() -> Option<(u32, bool)> {
     let mut file = open_lock().ok()?;
     match file.try_lock() {
         // Nobody holds it. Dropping the file releases our probe.
@@ -178,10 +185,22 @@ fn running_pid() -> Option<u32> {
         Err(TryLockError::WouldBlock) => {
             let mut text = String::new();
             file.read_to_string(&mut text).ok()?;
-            text.trim().parse().ok()
+            let mut lines = text.lines();
+            let pid = lines.next()?.trim().parse().ok()?;
+            Some((pid, lines.next().map(str::trim) == Some("1")))
         }
         Err(TryLockError::Error(_)) => None,
     }
+}
+
+/// The PID of the running instance.
+fn running_pid() -> Option<u32> {
+    running_instance().map(|(pid, _)| pid)
+}
+
+/// Whether the running instance writes the debug log. `None` when none runs.
+pub fn running_debug_log() -> Option<bool> {
+    running_instance().map(|(_, debug)| debug)
 }
 
 pub fn is_running() -> bool {
