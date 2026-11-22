@@ -9,11 +9,13 @@
 use anyhow::{Result, bail};
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RegGetValueW};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VIRTUAL_KEY, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
-    VK_LWIN, VK_SPACE,
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VIRTUAL_KEY, VK_LCONTROL,
+    VK_LMENU, VK_LSHIFT, VK_LWIN, VK_SPACE,
 };
 use windows::core::HSTRING;
+
+use crate::hold::HeldKey;
 
 const KEY: &str = r"Control Panel\Input Method\Hot Keys\00000010";
 
@@ -96,6 +98,44 @@ fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
             },
         },
     }
+}
+
+/// Replays keyboard events captured by the hook, in order. They are injected, so our own hook lets
+/// them through.
+pub fn replay(keys: &[HeldKey]) -> Result<()> {
+    let inputs: Vec<INPUT> = keys
+        .iter()
+        .map(|key| {
+            let mut flags = KEYBD_EVENT_FLAGS(0);
+            if key.up {
+                flags |= KEYEVENTF_KEYUP;
+            }
+            if key.extended {
+                flags |= KEYEVENTF_EXTENDEDKEY;
+            }
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: VIRTUAL_KEY(key.vk as u16),
+                        wScan: key.scan as u16,
+                        dwFlags: flags,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            }
+        })
+        .collect();
+    if inputs.is_empty() {
+        return Ok(());
+    }
+    // SAFETY: `inputs` is a valid slice of fully initialised INPUT structures.
+    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    if sent as usize != inputs.len() {
+        bail!("SendInput replayed {sent} of {} held keys", inputs.len());
+    }
+    Ok(())
 }
 
 /// Presses the configured IME toggle hotkey.

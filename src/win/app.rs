@@ -47,8 +47,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, w};
 
 use super::hud::{Hud, draw_text};
-use super::{Engine, autostart, init_com};
+use super::{Engine, autostart, hotkey, init_com};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
+use crate::hold::{HeldKey, KeyHold};
 use crate::reminder::{Reminder, now_ms};
 use crate::state::{Ime, Snapshot};
 use crate::tap::{Key, Tap, TapDetector};
@@ -67,17 +68,28 @@ const WM_TRIPLE_TAP: u32 = WM_APP + 7;
 /// The reminder wants the HUD shown.
 const WM_REMIND: u32 = WM_APP + 5;
 
+/// Held-back keys may be replayed: the input method has applied the switch, or the hold is over.
+const WM_DRAIN: u32 = WM_APP + 8;
+
 const TIMER_DEBOUNCE: usize = 1;
 /// Ends the wait for a third Ctrl tap.
 const TIMER_TRIPLE: usize = 2;
+/// Ends a key hold that was never drained, so a failure cannot leave the keyboard dead.
+const TIMER_HOLD: usize = 3;
+/// The longest keys are held back.
+const HOLD_TIMEOUT_MS: u32 = 1000;
 /// How long focus and IME notifications are allowed to settle before the state is read.
 const DEBOUNCE_MS: u32 = 250;
 /// How long the worker waits after an action before reading the state back.
 const SETTLE: Duration = Duration::from_millis(150);
+/// How long the worker waits after a toggle before releasing the held-back keys, for the input
+/// method to apply it.
+const APPLY: Duration = Duration::from_millis(50);
 
 const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 const EVENT_OBJECT_IME_CHANGE: u32 = 0x8029;
 const WINEVENT_OUTOFCONTEXT: u32 = 0;
+const LLKHF_EXTENDED: u32 = 0x01;
 const LLKHF_INJECTED: u32 = 0x10;
 const LLMHF_INJECTED: u32 = 0x01;
 
@@ -93,6 +105,8 @@ enum Job {
     Probe,
     /// Read the state and always show it.
     Show,
+    /// Replay keys that were held back.
+    Replay(Vec<HeldKey>),
 }
 
 struct Outcome {
@@ -117,6 +131,9 @@ thread_local! {
     static TAP: RefCell<TapDetector> = RefCell::new(TapDetector::default());
     static MAIN: Cell<isize> = const { Cell::new(0) };
     static TAP_ENABLED: Cell<bool> = const { Cell::new(false) };
+    /// Keys typed while a double tap is applied; touched by the keyboard hook, so kept out of `APP`.
+    static HOLD: RefCell<KeyHold> = RefCell::new(KeyHold::default());
+    static HOLD_ENABLED: Cell<bool> = const { Cell::new(false) };
     /// `None` when the reminder is off. Touched by the hooks, so kept out of `APP` like `TAP`.
     static REMINDER: RefCell<Option<Reminder>> = const { RefCell::new(None) };
     /// The next debounced read shows the HUD even if nothing changed.
@@ -149,6 +166,7 @@ pub fn run(config: Config) -> Result<()> {
     let tap = TapDetector::new(config.tap.gap_ms, config.tap.hold_ms, config.tap.triple_ms);
     TAP.with(|t| *t.borrow_mut() = tap);
     TAP_ENABLED.with(|t| t.set(config.tap.enabled));
+    HOLD_ENABLED.with(|h| h.set(config.tap.hold_input));
     let r = &config.reminder;
     if r.enabled {
         let reminder = Reminder::new(r.mode, r.idle_secs, r.dwell_secs, now_ms());
@@ -201,13 +219,30 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
     thread::spawn(move || {
         init_com();
         let engine = Engine::new();
+        let post = |message: u32| {
+            // SAFETY: posting to the main window handle, which outlives the worker.
+            unsafe { PostMessageW(Some(HWND(main as *mut _)), message, WPARAM(0), LPARAM(0)).ok() };
+        };
         for job in rx {
+            let toggled = matches!(job, Job::Toggle);
             let (action, force) = match job {
                 Job::Set(ime) => (Some(engine.set(ime)), true),
                 Job::Toggle => (Some(engine.toggle()), true),
                 Job::Show => (None, true),
                 Job::Probe => (None, false),
+                Job::Replay(keys) => {
+                    if let Err(e) = hotkey::replay(&keys) {
+                        eprintln!("imetap: {e:#}");
+                    }
+                    post(WM_DRAIN);
+                    continue;
+                }
             };
+            if toggled {
+                // The toggle is in; let the input method apply it, then release the held-back keys.
+                thread::sleep(APPLY);
+                post(WM_DRAIN);
+            }
             let error = action.and_then(Result::err).map(|e| format!("{e:#}"));
             if force {
                 // Let the input method apply the change before reading it back.
@@ -219,10 +254,7 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 error,
             };
             outcomes.lock().unwrap().push_back(outcome);
-            // SAFETY: posting to the main window handle, which outlives the worker.
-            unsafe {
-                PostMessageW(Some(HWND(main as *mut _)), WM_OUTCOME, WPARAM(0), LPARAM(0)).ok()
-            };
+            post(WM_OUTCOME);
         }
     });
 }
@@ -349,9 +381,46 @@ fn note_activity() {
 fn post_tap(tap: Tap) {
     match tap {
         Tap::None => {}
-        Tap::Pending => post_main(WM_TAP_PENDING),
-        Tap::Double => post_main(WM_TAP),
+        Tap::Pending => {
+            begin_hold();
+            post_main(WM_TAP_PENDING);
+        }
+        Tap::Double => {
+            begin_hold();
+            post_main(WM_TAP);
+        }
         Tap::Triple => post_main(WM_TRIPLE_TAP),
+    }
+}
+
+/// Starts holding back keys until the double tap has taken effect.
+fn begin_hold() {
+    if !HOLD_ENABLED.with(Cell::get) {
+        return;
+    }
+    HOLD.with(|h| h.borrow_mut().begin());
+    let hwnd = MAIN.with(Cell::get);
+    // SAFETY: arms a timer of the main window, from its own thread.
+    unsafe {
+        SetTimer(
+            Some(HWND(hwnd as *mut _)),
+            TIMER_HOLD,
+            HOLD_TIMEOUT_MS,
+            None,
+        )
+    };
+}
+
+/// Replays what was held back, or, when nothing is left, ends the hold. Called again after every
+/// replay, so keys typed meanwhile also stay in order.
+fn drain(hwnd: HWND) {
+    let held = HOLD.with(|h| h.borrow_mut().take());
+    if held.is_empty() {
+        HOLD.with(|h| h.borrow_mut().stop());
+        // SAFETY: stops the timer set in `begin_hold`; fails harmlessly when it is not running.
+        unsafe { KillTimer(Some(hwnd), TIMER_HOLD).ok() };
+    } else {
+        send(Job::Replay(held));
     }
 }
 
@@ -383,7 +452,20 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                 WM_KEYUP | WM_SYSKEYUP => t.borrow_mut().key_up(key, now),
                 _ => Tap::None,
             });
+            // A key typed while a double tap is being applied waits for it; this runs before
+            // `post_tap`, so the Ctrl release that completes the double tap itself goes through.
+            let held = HOLD.with(|h| {
+                h.borrow_mut().capture(HeldKey {
+                    vk: info.vkCode,
+                    scan: info.scanCode,
+                    extended: info.flags.0 & LLKHF_EXTENDED != 0,
+                    up: matches!(wparam.0 as u32, WM_KEYUP | WM_SYSKEYUP),
+                })
+            });
             post_tap(tap);
+            if held {
+                return LRESULT(1);
+            }
         }
     }
     // SAFETY: passing the event on, unchanged.
@@ -738,6 +820,16 @@ unsafe extern "system" fn window_proc(
         }
         WM_TRIPLE_TAP => {
             send(Job::Show);
+            // Nothing is switched, so the held-back keys can go right away.
+            drain(hwnd);
+            LRESULT(0)
+        }
+        WM_DRAIN => {
+            drain(hwnd);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_HOLD => {
+            drain(hwnd);
             LRESULT(0)
         }
         WM_REMIND => {

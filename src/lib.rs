@@ -7,6 +7,7 @@
 pub mod cli;
 pub mod config;
 pub mod doubao;
+pub mod hold;
 pub mod reminder;
 pub mod state;
 pub mod tap;

@@ -95,6 +95,9 @@ pub struct TapConfig {
     /// How long to wait after a double tap for a third tap, in milliseconds; 0 turns triple taps
     /// off, so double taps act at once.
     pub triple_ms: u64,
+    /// Hold back keys typed while a double tap is being applied, and replay them afterwards, so
+    /// that they reach the application in the new mode (Windows only).
+    pub hold_input: bool,
 }
 
 impl Default for TapConfig {
@@ -104,6 +107,7 @@ impl Default for TapConfig {
             gap_ms: TapDetector::DEFAULT_GAP_MS,
             hold_ms: TapDetector::DEFAULT_HOLD_MS,
             triple_ms: TapDetector::DEFAULT_TRIPLE_MS,
+            hold_input: true,
         }
     }
 }
