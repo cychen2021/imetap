@@ -110,8 +110,7 @@ struct State {
     config: Config,
     engine: Engine,
     hud: Hud,
-    /// Held only to keep the menu bar icon alive.
-    _status_item: Retained<NSStatusItem>,
+    status_item: Retained<NSStatusItem>,
     last: Option<Snapshot>,
     hotkeys: Vec<(u16, u64, Ime)>,
     /// The HUD's current appearance. `Some` while a chain of step timers runs.
@@ -171,7 +170,7 @@ pub fn run(config: Config) -> Result<()> {
             config,
             engine: Engine::new(),
             hud,
-            _status_item: status_item,
+            status_item,
             last: None,
             hotkeys,
             hud_run: None,
@@ -520,9 +519,25 @@ fn act(action: Action) {
                 result.as_ref().err().map(|e| format!("{e:#}"))
             )
         });
-        state.last = Some(snapshot);
+        set_last(state, snapshot);
         show_hud(state, snapshot);
     });
+}
+
+/// Records the last state seen, and shows "E" in the menu bar icon while it is English.
+fn set_last(state: &mut State, snapshot: Snapshot) {
+    let english = is_english(snapshot);
+    if state.last.map(is_english) != Some(english)
+        && let Some(button) = state.status_item.button(state.mtm)
+    {
+        button.setImage(Some(&status_image(english)));
+    }
+    state.last = Some(snapshot);
+}
+
+/// True for the US layout and for the English mode of a Chinese input method.
+fn is_english(snapshot: Snapshot) -> bool {
+    snapshot.ime == Ime::Us || snapshot.chinese == Some(false)
 }
 
 /// Reads the state. Shows the HUD only if it differs from the last one seen, or if `force`.
@@ -535,7 +550,7 @@ fn probe(show_if_changed: bool, force: bool) {
         let snapshot = state.engine.snapshot();
         let changed = state.last != Some(snapshot);
         let first = state.last.is_none();
-        state.last = Some(snapshot);
+        set_last(state, snapshot);
         let show =
             force || (changed && show_if_changed && !first && state.config.hud.on_window_switch);
         debug::log(|| {
@@ -587,7 +602,7 @@ extern "C" fn mingkuai_mode_changed(_: *mut c_void) {
         let snapshot = state.engine.snapshot();
         let show = snapshot.ime == Ime::Mingkuai && state.last != Some(snapshot);
         debug::log(|| format!("mingkuai mode changed snapshot={snapshot:?} -> show={show}"));
-        state.last = Some(snapshot);
+        set_last(state, snapshot);
         if show {
             show_hud(state, snapshot);
         }
@@ -708,12 +723,13 @@ fn observe_changes() {
 
 // ---- status item -------------------------------------------------------------------------------
 
-/// The menu bar icon: "中" knocked out of a rounded square, like the Windows tray icon. It is a
-/// template image, so macOS tints it for light and dark menu bars. It never shows the state, since
-/// the system input menu already does.
-fn status_image() -> Retained<NSImage> {
+/// The menu bar icon: "中", or "E" while the state is English, knocked out of a rounded square,
+/// like the Windows tray icon. It is a template image, so macOS tints it for light and dark menu
+/// bars. It shows only Chinese or English: the system input menu shows the input method, but not
+/// the mode of an input method such as Mingkuai.
+fn status_image(english: bool) -> Retained<NSImage> {
     const SIZE: f64 = 18.0;
-    let draw = RcBlock::new(|_: NSRect| -> Bool {
+    let draw = RcBlock::new(move |_: NSRect| -> Bool {
         let square = NSRect::new(NSPoint::new(1.0, 1.0), NSSize::new(SIZE - 2.0, SIZE - 2.0));
         NSColor::blackColor().setFill();
         NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(square, 4.0, 4.0).fill();
@@ -729,7 +745,11 @@ fn status_image() -> Retained<NSImage> {
                 &[&**font as &AnyObject, &**color as &AnyObject],
             )
         };
-        let text = ns_string!("中");
+        let text = if english {
+            ns_string!("E")
+        } else {
+            ns_string!("中")
+        };
         // SAFETY: drawing into the image's current graphics context, which AppKit set up.
         unsafe {
             let size = text.sizeWithAttributes(Some(&attributes));
@@ -747,7 +767,7 @@ fn status_image() -> Retained<NSImage> {
 fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
     if let Some(button) = item.button(mtm) {
-        button.setImage(Some(&status_image()));
+        button.setImage(Some(&status_image(false)));
         button.setToolTip(Some(ns_string!("imetap")));
     }
     let target: Retained<MenuTarget> = unsafe { msg_send![mtm.alloc::<MenuTarget>(), init] };
