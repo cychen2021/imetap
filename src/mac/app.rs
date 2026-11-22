@@ -131,6 +131,8 @@ thread_local! {
     static REMINDER: RefCell<Option<Reminder>> = const { RefCell::new(None) };
     /// The next probe shows the HUD even if nothing changed.
     static REMIND_PENDING: Cell<bool> = const { Cell::new(false) };
+    /// The Accessibility prompt has been shown, so retries check silently.
+    static PROMPTED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Runs the tool until the user quits from the status item menu.
@@ -297,8 +299,9 @@ fn start_event_tap() {
         )
     };
     if port.is_null() {
-        // Not trusted yet: show the system prompt and try again in a few seconds.
-        ffi::ensure_accessibility();
+        // Not trusted yet: show the system prompt once and try again in a few seconds. Prompting
+        // on every retry would pop the dialog up every few seconds until the user grants access.
+        ffi::ensure_accessibility(!PROMPTED.with(|p| p.replace(true)));
         schedule(3.0, retry_tap);
         return;
     }

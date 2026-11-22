@@ -36,6 +36,7 @@ unsafe extern "C" {
     pub static kCFRunLoopCommonModes: CFStringRef;
     pub static kAXTrustedCheckOptionPrompt: CFStringRef;
     pub static kCFBooleanTrue: CFTypeRef;
+    pub static kCFBooleanFalse: CFTypeRef;
 
     fn TISCopyCurrentKeyboardInputSource() -> CFTypeRef;
     fn TISCreateInputSourceList(properties: CFTypeRef, include_all_installed: bool) -> CFArrayRef;
@@ -212,12 +213,17 @@ pub fn select_source(wanted: &str) -> Result<()> {
     }
 }
 
-/// Asks for the Accessibility permission, showing the system prompt if it is missing.
-pub fn ensure_accessibility() -> bool {
+/// Whether the process has the Accessibility permission. With `prompt`, shows the system prompt
+/// if it is missing.
+pub fn ensure_accessibility(prompt: bool) -> bool {
     // SAFETY: builds a one-entry dictionary from static CF constants.
     unsafe {
         let keys = [kAXTrustedCheckOptionPrompt];
-        let values = [kCFBooleanTrue];
+        let values = [if prompt {
+            kCFBooleanTrue
+        } else {
+            kCFBooleanFalse
+        }];
         let options = CFDictionaryCreate(
             std::ptr::null(),
             keys.as_ptr(),
