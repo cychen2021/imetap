@@ -10,9 +10,11 @@
 pub mod app;
 mod ffi;
 
-use std::fs;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
@@ -118,35 +120,61 @@ fn remember_chinese(ime: Ime) {
 
 // ---- process management ------------------------------------------------------------------------
 
-fn pid_file() -> Result<PathBuf> {
-    Ok(data_dir()?.join("imetap.pid"))
+/// The single-instance lock, which also records the running instance's PID.
+///
+/// Its place is fixed, not next to the config, so that an instance started with another
+/// `XDG_CONFIG_HOME` still sees the running one: two instances would both act on every double tap,
+/// and the second switch undoes the first.
+fn lock_file() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join("Library/Caches/imetap/instance.lock"))
 }
 
-/// Records this process as the running instance; fails if another one is alive.
-pub(crate) fn claim_pid() -> Result<()> {
-    if is_running() {
-        bail!("imetap is already running");
-    }
-    let path = pid_file()?;
+fn open_lock() -> Result<File> {
+    let path = lock_file()?;
     fs::create_dir_all(path.parent().context("no parent directory")?)?;
-    fs::write(path, std::process::id().to_string())?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("cannot open {}", path.display()))
+}
+
+/// Held for the life of the resident process; the OS releases the lock when it exits.
+static INSTANCE: OnceLock<File> = OnceLock::new();
+
+/// Takes the single-instance lock and records this process's PID; fails if another instance
+/// holds it.
+pub(crate) fn claim_pid() -> Result<()> {
+    let mut file = open_lock()?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => bail!("imetap is already running"),
+        Err(TryLockError::Error(e)) => return Err(e).context("cannot lock the instance file"),
+    }
+    file.set_len(0)?;
+    file.rewind()?;
+    write!(file, "{}", std::process::id())?;
+    file.flush()?;
+    let _ = INSTANCE.set(file);
     Ok(())
 }
 
+/// The PID of the running instance: the lock is held, and the file names it.
 fn running_pid() -> Option<u32> {
-    let pid: u32 = fs::read_to_string(pid_file().ok()?)
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    // `kill -0` only checks that the process exists.
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .output()
-        .ok()?
-        .status
-        .success()
-        .then_some(pid)
+    let mut file = open_lock().ok()?;
+    match file.try_lock() {
+        // Nobody holds it; dropping the file releases our probe.
+        Ok(()) => None,
+        Err(TryLockError::WouldBlock) => {
+            let mut text = String::new();
+            file.read_to_string(&mut text).ok()?;
+            text.trim().parse().ok()
+        }
+        Err(TryLockError::Error(_)) => None,
+    }
 }
 
 pub fn is_running() -> bool {
