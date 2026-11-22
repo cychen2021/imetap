@@ -23,6 +23,8 @@ use crate::state::Ime;
 const LANG_ZH_CN: u16 = 0x0804;
 /// The US keyboard layout handle.
 const HKL_US: isize = 0x0409_0409;
+/// The Chinese (PRC) keyboard layout handle that the Chinese IMEs sit under.
+const HKL_ZH_CN: isize = 0x0804_0804;
 
 /// `(CLSID, profile GUID)` of the TSF text input processors.
 const PINYIN: (GUID, GUID) = (
@@ -46,21 +48,18 @@ pub fn activate(ime: Ime) -> Result<()> {
         Ime::Us => {
             // ActivateProfile does not change the layout of the foreground window for plain
             // keyboard layouts, so ask the window directly, as `im-select` does.
-            // SAFETY: posting a message to a window handle is always sound.
-            unsafe {
-                PostMessageW(
-                    Some(GetForegroundWindow()),
-                    WM_INPUTLANGCHANGEREQUEST,
-                    WPARAM(0),
-                    LPARAM(HKL_US),
-                )?
-            };
+            request_layout(HKL_US)?;
             return Ok(());
         }
         Ime::Pinyin => PINYIN,
         Ime::Doubao => DOUBAO,
         other => bail!("{} is not available on Windows", other.name()),
     };
+    // A window that sits on the US layout stays there when only the session profile changes, so
+    // that it keeps typing English. Move it to the Chinese layout first.
+    if (layout() & 0xFFFF) as u16 != LANG_ZH_CN {
+        request_layout(HKL_ZH_CN)?;
+    }
     // SAFETY: the GUID pointers outlive the call.
     unsafe {
         profile_mgr()?.ActivateProfile(
@@ -72,6 +71,20 @@ pub fn activate(ime: Ime) -> Result<()> {
             TF_IPPMF_FORSESSION,
         )?;
     }
+    Ok(())
+}
+
+/// Asks the foreground window to switch to a keyboard layout.
+fn request_layout(hkl: isize) -> Result<()> {
+    // SAFETY: posting a message to a window handle is always sound.
+    unsafe {
+        PostMessageW(
+            Some(GetForegroundWindow()),
+            WM_INPUTLANGCHANGEREQUEST,
+            WPARAM(0),
+            LPARAM(hkl),
+        )?
+    };
     Ok(())
 }
 

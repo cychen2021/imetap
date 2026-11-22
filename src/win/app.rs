@@ -937,6 +937,7 @@ unsafe extern "system" fn window_proc(
     match message {
         WM_HOTKEY => {
             if let Some(ime) = HOTKEY_IMES.get(wparam.0) {
+                debug::log(|| format!("hotkey {ime:?}"));
                 send(Job::Set(*ime));
             }
             LRESULT(0)
