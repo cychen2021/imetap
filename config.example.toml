@@ -2,12 +2,15 @@
 # Restart imetap after editing (`imetap restart`).
 
 [tap]
-# Double-tap Ctrl to toggle Chinese/English.
+# Double-tap Ctrl to toggle Chinese/English; triple-tap it to show the HUD without changing anything.
 enabled = true
 # Longest time between the two taps, in milliseconds.
 gap_ms = 500
 # Longest time Ctrl may be held for a press to count as a tap, in milliseconds.
 hold_ms = 300
+# How long to wait after a double tap for a third tap, in milliseconds. The toggle waits this long
+# too; 0 turns triple taps off, so the toggle is immediate.
+triple_ms = 300
 
 [hotkeys]
 # Global hotkeys that switch the input method. An empty string disables one.

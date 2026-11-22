@@ -3,7 +3,7 @@
 A small tray tool for Windows and macOS that makes switching between Chinese and English input painless.
 
 - Global hotkeys switch the input method: `Ctrl+Shift+S` US, `Ctrl+Shift+F` Microsoft Pinyin (Shuangpin on macOS), `Ctrl+Shift+D` Doubao.
-- Double-tap `Ctrl` to toggle Chinese/English in the current input method.
+- Double-tap `Ctrl` to toggle Chinese/English in the current input method; triple-tap it to show the HUD without changing anything.
 - A small translucent HUD at the bottom of the current window's monitor shows the new state after every change, and also when you switch to a window whose input method or mode differs (they are per window on Windows).
 - Optionally, a reminder shows the HUD again when you come back after the computer sat idle, and (in `resume-and-switch` mode) when you leave a window you used for a long time without seeing the HUD.
 - A tray icon shows the current state at a glance: red for Chinese, blue for English, grey for the US layout.
@@ -39,6 +39,7 @@ imetap config path|init|edit|check
 enabled = true
 gap_ms = 500     # longest time between the two taps
 hold_ms = 300    # longest time Ctrl may be held for a press to count as a tap
+triple_ms = 300  # wait this long after a double tap for a third (delays the toggle); 0 = off
 
 [hotkeys]        # an empty string disables a hotkey
 us = "Ctrl+Shift+S"

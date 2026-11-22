@@ -83,7 +83,7 @@ fn parse_key(name: &str) -> Result<Key> {
     }
 }
 
-/// `[tap]`: the Ctrl double-tap that toggles Chinese/English.
+/// `[tap]`: the Ctrl double-tap that toggles Chinese/English, and the triple-tap that shows the HUD.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct TapConfig {
@@ -92,6 +92,9 @@ pub struct TapConfig {
     pub gap_ms: u64,
     /// Longest time Ctrl may be held for a press to still be a tap, in milliseconds.
     pub hold_ms: u64,
+    /// How long to wait after a double tap for a third tap, in milliseconds; 0 turns triple taps
+    /// off, so double taps act at once.
+    pub triple_ms: u64,
 }
 
 impl Default for TapConfig {
@@ -100,6 +103,7 @@ impl Default for TapConfig {
             enabled: true,
             gap_ms: TapDetector::DEFAULT_GAP_MS,
             hold_ms: TapDetector::DEFAULT_HOLD_MS,
+            triple_ms: TapDetector::DEFAULT_TRIPLE_MS,
         }
     }
 }

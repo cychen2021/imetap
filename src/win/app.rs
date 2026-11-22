@@ -51,7 +51,7 @@ use super::{Engine, autostart, init_com};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
 use crate::reminder::{Reminder, now_ms};
 use crate::state::{Ime, Snapshot};
-use crate::tap::{Key, TapDetector};
+use crate::tap::{Key, Tap, TapDetector};
 
 const WM_TRAY: u32 = WM_APP + 1;
 /// The worker finished a job and queued an outcome.
@@ -60,10 +60,16 @@ const WM_OUTCOME: u32 = WM_APP + 2;
 const WM_PASSIVE: u32 = WM_APP + 3;
 /// The Ctrl double-tap was recognised.
 const WM_TAP: u32 = WM_APP + 4;
+/// A Ctrl double-tap waits for a possible third tap.
+const WM_TAP_PENDING: u32 = WM_APP + 6;
+/// The Ctrl triple-tap was recognised.
+const WM_TRIPLE_TAP: u32 = WM_APP + 7;
 /// The reminder wants the HUD shown.
 const WM_REMIND: u32 = WM_APP + 5;
 
 const TIMER_DEBOUNCE: usize = 1;
+/// Ends the wait for a third Ctrl tap.
+const TIMER_TRIPLE: usize = 2;
 /// How long focus and IME notifications are allowed to settle before the state is read.
 const DEBOUNCE_MS: u32 = 250;
 /// How long the worker waits after an action before reading the state back.
@@ -140,7 +146,8 @@ pub fn run(config: Config) -> Result<()> {
     let outcomes = Arc::new(Mutex::new(VecDeque::new()));
     spawn_worker(rx, outcomes.clone(), hwnd.0 as isize);
 
-    TAP.with(|t| *t.borrow_mut() = TapDetector::new(config.tap.gap_ms, config.tap.hold_ms));
+    let tap = TapDetector::new(config.tap.gap_ms, config.tap.hold_ms, config.tap.triple_ms);
+    TAP.with(|t| *t.borrow_mut() = tap);
     TAP_ENABLED.with(|t| t.set(config.tap.enabled));
     let r = &config.reminder;
     if r.enabled {
@@ -338,6 +345,16 @@ fn note_activity() {
     }
 }
 
+/// Hands a recognised tap to the window procedure.
+fn post_tap(tap: Tap) {
+    match tap {
+        Tap::None => {}
+        Tap::Pending => post_main(WM_TAP_PENDING),
+        Tap::Double => post_main(WM_TAP),
+        Tap::Triple => post_main(WM_TRIPLE_TAP),
+    }
+}
+
 fn post_main(message: u32) {
     let hwnd = MAIN.with(Cell::get);
     // SAFETY: posting to the main window; failure just means it is gone.
@@ -361,17 +378,12 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                 Key::Other
             };
             let now = info.time as u64;
-            let tapped = TAP.with(|t| match wparam.0 as u32 {
-                WM_KEYDOWN | WM_SYSKEYDOWN => {
-                    t.borrow_mut().key_down(key, now);
-                    false
-                }
+            let tap = TAP.with(|t| match wparam.0 as u32 {
+                WM_KEYDOWN | WM_SYSKEYDOWN => t.borrow_mut().key_down(key, now),
                 WM_KEYUP | WM_SYSKEYUP => t.borrow_mut().key_up(key, now),
-                _ => false,
+                _ => Tap::None,
             });
-            if tapped {
-                post_main(WM_TAP);
-            }
+            post_tap(tap);
         }
     }
     // SAFETY: passing the event on, unchanged.
@@ -389,7 +401,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             wparam.0 as u32,
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
         ) {
-            TAP.with(|t| t.borrow_mut().pointer());
+            post_tap(TAP.with(|t| t.borrow_mut().pointer()));
         }
     }
     // SAFETY: passing the event on, unchanged.
@@ -708,6 +720,24 @@ unsafe extern "system" fn window_proc(
         }
         WM_TAP => {
             send(Job::Toggle);
+            LRESULT(0)
+        }
+        WM_TAP_PENDING => {
+            let wait = TAP.with(|t| t.borrow().triple_ms()) as u32;
+            // SAFETY: (re)starts the triple-tap timer of this window.
+            unsafe { SetTimer(Some(hwnd), TIMER_TRIPLE, wait, None) };
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_TRIPLE => {
+            // SAFETY: stops the timer set above.
+            unsafe { KillTimer(Some(hwnd), TIMER_TRIPLE).ok() };
+            if TAP.with(|t| t.borrow_mut().expire()) == Tap::Double {
+                send(Job::Toggle);
+            }
+            LRESULT(0)
+        }
+        WM_TRIPLE_TAP => {
+            send(Job::Show);
             LRESULT(0)
         }
         WM_REMIND => {

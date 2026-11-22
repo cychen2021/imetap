@@ -31,7 +31,7 @@ use super::{Engine, autostart_enabled, claim_pid, open, set_autostart};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
 use crate::reminder::{Reminder, now_ms};
 use crate::state::{Ime, Snapshot};
-use crate::tap::{Key, TapDetector};
+use crate::tap::{Key, Tap, TapDetector};
 
 /// How long input-source and focus notifications may settle before the state is read.
 const DEBOUNCE_SECS: f64 = 0.25;
@@ -104,6 +104,8 @@ thread_local! {
     // The tap callback touches these two only, so it never collides with a borrow of `STATE`.
     static TAP: RefCell<TapDetector> = RefCell::new(TapDetector::default());
     static TAP_PORT: Cell<usize> = const { Cell::new(0) };
+    /// The timer that ends the wait for a third Ctrl tap.
+    static TRIPLE_TIMER: Cell<usize> = const { Cell::new(0) };
     /// The listen-only tap that sees mouse movement, for the reminder.
     static ACTIVITY_PORT: Cell<usize> = const { Cell::new(0) };
     /// `None` when the reminder is off. Kept out of `STATE` like `TAP`.
@@ -129,7 +131,8 @@ pub fn run(config: Config) -> Result<()> {
                 .map(|s| (keycode(s.key), flags_of(&s), ime))
         })
         .collect();
-    TAP.with(|t| *t.borrow_mut() = TapDetector::new(config.tap.gap_ms, config.tap.hold_ms));
+    let tap = TapDetector::new(config.tap.gap_ms, config.tap.hold_ms, config.tap.triple_ms);
+    TAP.with(|t| *t.borrow_mut() = tap);
     let r = &config.reminder;
     if r.enabled {
         let reminder = Reminder::new(r.mode, r.idle_secs, r.dwell_secs, now_ms());
@@ -375,24 +378,21 @@ extern "C" fn tap_callback(
     match kind {
         ffi::FLAGS_CHANGED => {
             if code == KEYCODE_CTRL_LEFT || code == KEYCODE_CTRL_RIGHT {
-                let tapped = TAP.with(|t| {
+                let tap = TAP.with(|t| {
                     let mut t = t.borrow_mut();
                     if flags & ffi::FLAG_CONTROL != 0 {
-                        t.key_down(Key::Ctrl, now);
-                        false
+                        t.key_down(Key::Ctrl, now)
                     } else {
                         t.key_up(Key::Ctrl, now)
                     }
                 });
-                if tapped {
-                    act(Action::Toggle);
-                }
+                on_tap(tap);
             } else {
-                TAP.with(|t| t.borrow_mut().key_down(Key::Other, now));
+                on_tap(TAP.with(|t| t.borrow_mut().key_down(Key::Other, now)));
             }
         }
         ffi::KEY_DOWN => {
-            TAP.with(|t| t.borrow_mut().key_down(Key::Other, now));
+            on_tap(TAP.with(|t| t.borrow_mut().key_down(Key::Other, now)));
             let hit = STATE.with(|s| {
                 let s = s.try_borrow().ok()?;
                 let state = s.as_ref()?;
@@ -409,11 +409,36 @@ extern "C" fn tap_callback(
             }
         }
         ffi::LEFT_MOUSE_DOWN | ffi::RIGHT_MOUSE_DOWN | ffi::OTHER_MOUSE_DOWN => {
-            TAP.with(|t| t.borrow_mut().pointer())
+            on_tap(TAP.with(|t| t.borrow_mut().pointer()))
         }
         _ => {}
     }
     event
+}
+
+/// Acts on a recognised tap: a double tap toggles, a triple tap shows the HUD, and a pending
+/// double tap arms the timer that waits for a third.
+fn on_tap(tap: Tap) {
+    match tap {
+        Tap::None => {}
+        Tap::Pending => {
+            let old = TRIPLE_TIMER.with(Cell::get);
+            if old != 0 {
+                // SAFETY: invalidating a timer we created; harmless if it has fired already.
+                unsafe { ffi::CFRunLoopTimerInvalidate(old as CFRunLoopTimerRef) };
+            }
+            let wait = TAP.with(|t| t.borrow().triple_ms()) as f64 / 1000.0;
+            let timer = schedule(wait, triple_timer_fired);
+            TRIPLE_TIMER.with(|t| t.set(timer as usize));
+        }
+        Tap::Double => act(Action::Toggle),
+        Tap::Triple => act(Action::Show),
+    }
+}
+
+extern "C" fn triple_timer_fired(_: CFRunLoopTimerRef, _: *mut c_void) {
+    TRIPLE_TIMER.with(|t| t.set(0));
+    on_tap(TAP.with(|t| t.borrow_mut().expire()));
 }
 
 // ---- actions and state -------------------------------------------------------------------------
@@ -421,6 +446,8 @@ extern "C" fn tap_callback(
 enum Action {
     Set(Ime),
     Toggle,
+    /// Show the HUD without changing anything.
+    Show,
 }
 
 /// Performs an action and always shows the result.
@@ -433,6 +460,7 @@ fn act(action: Action) {
         let result = match action {
             Action::Set(ime) => state.engine.set(ime),
             Action::Toggle => state.engine.toggle(),
+            Action::Show => Ok(()),
         };
         if let Err(e) = result {
             eprintln!("imetap: {e:#}");
