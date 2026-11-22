@@ -8,6 +8,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::config::{self, Config};
+use crate::debug;
 use crate::state::Ime;
 
 /// Switch input methods, toggle Chinese/English and show a HUD for each change.
@@ -21,7 +22,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run in the foreground (what `start` and the login entry launch).
-    Run,
+    Run {
+        /// Write the debug log, the same as setting `IMETAP_DEBUG`.
+        #[arg(long)]
+        debug: bool,
+    },
     /// Start the resident process in the background.
     Start,
     /// Stop the resident process.
@@ -53,7 +58,11 @@ enum Command {
 #[derive(Subcommand)]
 enum AutostartAction {
     /// Start imetap at login.
-    Enable,
+    Enable {
+        /// Have the started process write the debug log (`run --debug`).
+        #[arg(long)]
+        debug: bool,
+    },
     /// Do not start imetap at login.
     Disable,
     /// Show whether it starts at login.
@@ -85,13 +94,18 @@ pub fn main(console: bool) -> Result<()> {
             Cli::command().print_help()?;
             return Ok(());
         }
-        None => Command::Run,
+        None => Command::Run { debug: false },
     };
-    if !console && !matches!(command, Command::Run) {
+    if !console && !matches!(command, Command::Run { .. }) {
         platform::attach_console();
     }
     match command {
-        Command::Run => run(),
+        Command::Run { debug } => {
+            if debug {
+                debug::enable();
+            }
+            run()
+        }
         Command::Start => {
             if platform::is_running() {
                 println!("imetap is already running");
@@ -159,13 +173,17 @@ pub fn main(console: bool) -> Result<()> {
             Ok(())
         }
         Command::Autostart { action } => match action {
-            AutostartAction::Enable => {
-                platform::set_autostart(true)?;
-                println!("imetap will start at login");
+            AutostartAction::Enable { debug } => {
+                platform::set_autostart(true, debug)?;
+                if debug {
+                    println!("imetap will start at login and write the debug log");
+                } else {
+                    println!("imetap will start at login");
+                }
                 Ok(())
             }
             AutostartAction::Disable => {
-                platform::set_autostart(false)?;
+                platform::set_autostart(false, false)?;
                 println!("imetap will not start at login");
                 Ok(())
             }
@@ -282,22 +300,22 @@ mod platform {
         autostart::is_enabled()
     }
 
-    /// Whether the running instance writes the debug log, which `IMETAP_DEBUG` turns on at its start.
+    /// Whether the running instance writes the debug log, which `run --debug` or `IMETAP_DEBUG` turns on at its start.
     pub fn debug_status() -> Option<String> {
         Some(match app::running_debug_log() {
             None => "off (not running)".to_string(),
             Some(true) => format!("on, logging to {}", debug::log_path().display()),
-            Some(false) => "off (set IMETAP_DEBUG=1 before starting to log)".to_string(),
+            Some(false) => "off (start with `run --debug` or IMETAP_DEBUG=1 to log)".to_string(),
         })
     }
 
-    pub fn set_autostart(enabled: bool) -> Result<()> {
-        if enabled && !autostart::set(true)? {
+    pub fn set_autostart(enabled: bool, debug: bool) -> Result<()> {
+        if enabled && !autostart::set(true, debug)? {
             eprintln!(
                 "note: Windows delays this kind of login entry, sometimes by minutes. Run `imetap autostart enable` once from an elevated terminal to start at logon without the delay."
             );
         } else if !enabled {
-            autostart::set(false)?;
+            autostart::set(false, false)?;
         }
         Ok(())
     }
@@ -327,12 +345,12 @@ mod platform {
 
     pub fn attach_console() {}
 
-    /// Whether the running instance writes the debug log, which `IMETAP_DEBUG` turns on at its start.
+    /// Whether the running instance writes the debug log, which `run --debug` or `IMETAP_DEBUG` turns on at its start.
     pub fn debug_status() -> Option<String> {
         Some(match crate::mac::running_debug_log() {
             None => "off (not running)".to_string(),
             Some(true) => format!("on, logging to {}", crate::debug::log_path().display()),
-            Some(false) => "off (set IMETAP_DEBUG=1 before starting to log)".to_string(),
+            Some(false) => "off (start with `run --debug` or IMETAP_DEBUG=1 to log)".to_string(),
         })
     }
 
@@ -393,7 +411,7 @@ mod platform {
     pub fn autostart_enabled() -> bool {
         false
     }
-    pub fn set_autostart(_: bool) -> Result<()> {
+    pub fn set_autostart(_: bool, _: bool) -> Result<()> {
         bail!("not supported on this platform yet")
     }
     pub fn open(_: &Path) -> Result<()> {

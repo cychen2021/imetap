@@ -68,7 +68,7 @@ define_class!(
 
         #[unsafe(method(toggleLogin:))]
         fn toggle_login(&self, _sender: Option<&AnyObject>) {
-            if let Err(e) = set_autostart(!autostart_enabled()) {
+            if let Err(e) = set_autostart(!autostart_enabled(), debug::enabled()) {
                 eprintln!("imetap: cannot change run at login: {e:#}");
             }
         }

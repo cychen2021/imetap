@@ -36,14 +36,21 @@ pub fn task_exists() -> bool {
     schtasks(&["/Query", "/TN", TASK])
 }
 
+/// The command line the login entry runs, with `--debug` when it should write the debug log.
+fn run_command(debug: bool) -> Result<String> {
+    let flag = if debug { " --debug" } else { "" };
+    Ok(format!("\"{}\" run{flag}", daemon_exe()?.display()))
+}
+
 /// Creates the logon task for the current user. Fails without elevation.
-fn create_task() -> bool {
-    let (Ok(exe), Ok(user), Ok(domain)) =
-        (daemon_exe(), env::var("USERNAME"), env::var("USERDOMAIN"))
-    else {
+fn create_task(debug: bool) -> bool {
+    let (Ok(command), Ok(user), Ok(domain)) = (
+        run_command(debug),
+        env::var("USERNAME"),
+        env::var("USERDOMAIN"),
+    ) else {
         return false;
     };
-    let command = format!("\"{}\" run", exe.display());
     let user = format!("{domain}\\{user}");
     schtasks(&[
         "/Create", "/TN", TASK, "/TR", &command, "/SC", "ONLOGON", "/RU", &user, "/IT", "/RL",
@@ -72,21 +79,22 @@ fn run_entry_exists() -> bool {
     }
 }
 
-/// Enables or disables starting at login. When enabling, returns whether the fast logon task
-/// could be created, which needs an elevated terminal. The Run entry is set either way.
-pub fn set(enabled: bool) -> Result<bool> {
+/// Enables or disables starting at login, with `debug` writing the debug log. When enabling,
+/// returns whether the fast logon task could be created, which needs an elevated terminal. The
+/// Run entry is set either way.
+pub fn set(enabled: bool, debug: bool) -> Result<bool> {
     if enabled {
-        let task = create_task();
-        set_run_entry(true)?;
+        let task = create_task(debug);
+        set_run_entry(true, debug)?;
         Ok(task)
     } else {
         let _ = schtasks(&["/Delete", "/TN", TASK, "/F"]);
-        set_run_entry(false)?;
+        set_run_entry(false, false)?;
         Ok(false)
     }
 }
 
-fn set_run_entry(enabled: bool) -> Result<()> {
+fn set_run_entry(enabled: bool, debug: bool) -> Result<()> {
     // SAFETY: the key handle is closed before returning and the data slice outlives the call.
     unsafe {
         let mut key = HKEY::default();
@@ -99,7 +107,7 @@ fn set_run_entry(enabled: bool) -> Result<()> {
         )
         .ok()?;
         let result = if enabled {
-            let command = format!("\"{}\" run", daemon_exe()?.display());
+            let command = run_command(debug)?;
             let wide: Vec<u8> = command
                 .encode_utf16()
                 .chain(Some(0))

@@ -1,4 +1,4 @@
-//! The debug log, which `IMETAP_DEBUG` turns on, shared by both platforms.
+//! The debug log, which `IMETAP_DEBUG` or `run --debug` turns on, shared by both platforms.
 //!
 //! It records what the resident process reads and decides, one line per event, in the temporary
 //! directory. The variable is read once, when the process first asks.
@@ -13,10 +13,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// The log stops growing at this size and starts over.
 const MAX_BYTES: u64 = 2_000_000;
 
-/// Whether the environment variable `IMETAP_DEBUG` was set when this process asked first.
+static ENABLED: OnceLock<bool> = OnceLock::new();
+
+/// Whether the log is on: turned on by `enable`, or else by the environment variable
+/// `IMETAP_DEBUG` as it was when this process asked first.
 pub fn enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| env::var_os("IMETAP_DEBUG").is_some())
+}
+
+/// Turns the log on for this process (`run --debug`). Call it before anything asks `enabled`.
+pub fn enable() {
+    let _ = ENABLED.set(true);
 }
 
 /// Where the log is written.

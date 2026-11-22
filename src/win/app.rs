@@ -828,7 +828,7 @@ fn show_menu(hwnd: HWND) {
         let _ = DestroyMenu(menu);
         match command {
             CMD_AUTOSTART => {
-                if let Err(e) = autostart::set(!autostart::is_enabled()) {
+                if let Err(e) = autostart::set(!autostart::is_enabled(), debug::enabled()) {
                     eprintln!("imetap: cannot change run at login: {e:#}");
                 }
             }

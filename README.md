@@ -26,13 +26,13 @@ imetap start | stop | restart      manage the background process
 imetap status [-v]                 process, login item and current input method
 imetap set us|pinyin|doubao        switch input method (shuangpin on macOS)
 imetap toggle                      toggle Chinese/English
-imetap autostart enable|disable|status
+imetap autostart enable [--debug] | disable | status
 imetap config path|init|edit|check
 ```
 
 On Windows, `imetap.exe` is a GUI-subsystem program, so its output does not reach pipes or scripts. `imetapctl` takes the same commands (except that it starts nothing by itself) as a console program with normal output. It launches and registers the `imetap` next to it. On macOS it is only a stub. Use `imetap` there.
 
-`imetap run` runs in the foreground. The tray menu offers "Run at login", "Open config file" and "Quit".
+`imetap run` runs in the foreground. `imetap run --debug`, or `IMETAP_DEBUG=1` in its environment, makes it write a debug log to `imetap-debug.log` in the temporary directory (`imetap status` shows where). `imetap autostart enable --debug` makes the login entry start it that way. The tray menu offers "Run at login", "Open config file" and "Quit".
 
 ## Configuration
 
