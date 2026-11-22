@@ -37,18 +37,19 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CallNextHookEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
     DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, FindWindowW, GetCursorPos,
     GetMessageW, HHOOK, HICON, ICONINFO, KBDLLHOOKSTRUCT, KillTimer, MF_CHECKED, MF_SEPARATOR,
-    MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
-    SW_SHOWNORMAL, SetForegroundWindow, SetTimer, SetWindowsHookExW, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WNDCLASSEXW, WS_OVERLAPPED,
+    MF_STRING, MSG, MSLLHOOKSTRUCT, PostMessageW, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SW_SHOWNORMAL, SetForegroundWindow, SetTimer, SetWindowsHookExW,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_HOTKEY,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_NULL, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WNDCLASSEXW, WS_OVERLAPPED,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
 use super::hud::{Hud, draw_text};
 use super::{Engine, autostart, init_com};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
+use crate::reminder::{Reminder, now_ms};
 use crate::state::{Ime, Snapshot};
 use crate::tap::{Key, TapDetector};
 
@@ -59,6 +60,8 @@ const WM_OUTCOME: u32 = WM_APP + 2;
 const WM_PASSIVE: u32 = WM_APP + 3;
 /// The Ctrl double-tap was recognised.
 const WM_TAP: u32 = WM_APP + 4;
+/// The reminder wants the HUD shown.
+const WM_REMIND: u32 = WM_APP + 5;
 
 const TIMER_DEBOUNCE: usize = 1;
 /// How long focus and IME notifications are allowed to settle before the state is read.
@@ -70,6 +73,7 @@ const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 const EVENT_OBJECT_IME_CHANGE: u32 = 0x8029;
 const WINEVENT_OUTOFCONTEXT: u32 = 0;
 const LLKHF_INJECTED: u32 = 0x10;
+const LLMHF_INJECTED: u32 = 0x01;
 
 const CMD_AUTOSTART: usize = 1;
 const CMD_CONFIG: usize = 2;
@@ -106,6 +110,11 @@ thread_local! {
     // The hooks touch only these two, so a hook can never collide with a borrow of `APP`.
     static TAP: RefCell<TapDetector> = RefCell::new(TapDetector::default());
     static MAIN: Cell<isize> = const { Cell::new(0) };
+    static TAP_ENABLED: Cell<bool> = const { Cell::new(false) };
+    /// `None` when the reminder is off. Touched by the hooks, so kept out of `APP` like `TAP`.
+    static REMINDER: RefCell<Option<Reminder>> = const { RefCell::new(None) };
+    /// The next debounced read shows the HUD even if nothing changed.
+    static REMIND_PENDING: Cell<bool> = const { Cell::new(false) };
     /// The id of the `TaskbarCreated` broadcast, sent when Explorer (re)starts its taskbar.
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
 }
@@ -132,6 +141,12 @@ pub fn run(config: Config) -> Result<()> {
     spawn_worker(rx, outcomes.clone(), hwnd.0 as isize);
 
     TAP.with(|t| *t.borrow_mut() = TapDetector::new(config.tap.gap_ms, config.tap.hold_ms));
+    TAP_ENABLED.with(|t| t.set(config.tap.enabled));
+    let r = &config.reminder;
+    if r.enabled {
+        let reminder = Reminder::new(r.mode, r.idle_secs, r.dwell_secs, now_ms());
+        REMINDER.with(|cell| *cell.borrow_mut() = Some(reminder));
+    }
     let hooks = Hooks::install(&config, instance);
     let registered = register_hotkeys(hwnd, &config);
     APP.with(|a| {
@@ -268,7 +283,8 @@ impl Hooks {
         // SAFETY: the hook procedures below are `extern "system"` functions that stay valid.
         unsafe {
             let (mut keyboard, mut mouse) = (None, None);
-            if config.tap.enabled {
+            // The reminder needs to see input too.
+            if config.tap.enabled || config.reminder.enabled {
                 keyboard =
                     SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(instance), 0).ok();
                 mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(instance), 0).ok();
@@ -310,6 +326,18 @@ impl Drop for Hooks {
     }
 }
 
+/// Feeds key or mouse activity to the reminder; cheap enough for every mouse move.
+fn note_activity() {
+    let resumed = REMINDER.with(|r| {
+        r.borrow_mut()
+            .as_mut()
+            .is_some_and(|r| r.activity(now_ms()))
+    });
+    if resumed {
+        post_main(WM_REMIND);
+    }
+}
+
 fn post_main(message: u32) {
     let hwnd = MAIN.with(Cell::get);
     // SAFETY: posting to the main window; failure just means it is gone.
@@ -321,7 +349,11 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         // SAFETY: for WH_KEYBOARD_LL, `lparam` points to a KBDLLHOOKSTRUCT.
         let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
         // Ignore keys sent by other programs (including our own SendInput of the IME hotkey).
-        if info.flags.0 & LLKHF_INJECTED == 0 {
+        let injected = info.flags.0 & LLKHF_INJECTED != 0;
+        if !injected {
+            note_activity();
+        }
+        if !injected && TAP_ENABLED.with(Cell::get) {
             // `time` is the event's own timestamp in ms, so a delayed hook call does not skew taps.
             let key = if matches!(info.vkCode, 0xA2 | 0xA3) {
                 Key::Ctrl
@@ -347,13 +379,18 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 }
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0
-        && matches!(
+    if code >= 0 {
+        // SAFETY: for WH_MOUSE_LL, `lparam` points to an MSLLHOOKSTRUCT.
+        let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+        if info.flags & LLMHF_INJECTED == 0 {
+            note_activity();
+        }
+        if matches!(
             wparam.0 as u32,
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
-        )
-    {
-        TAP.with(|t| t.borrow_mut().pointer());
+        ) {
+            TAP.with(|t| t.borrow_mut().pointer());
+        }
     }
     // SAFETY: passing the event on, unchanged.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
@@ -361,13 +398,23 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 
 unsafe extern "system" fn win_event_proc(
     _: HWINEVENTHOOK,
-    _: u32,
+    event: u32,
     _: HWND,
     _: i32,
     _: i32,
     _: u32,
     _: u32,
 ) {
+    if event == EVENT_SYSTEM_FOREGROUND {
+        let due = REMINDER.with(|r| {
+            r.borrow_mut()
+                .as_mut()
+                .is_some_and(|r| r.focus_changed(now_ms()))
+        });
+        if due {
+            REMIND_PENDING.with(|p| p.set(true));
+        }
+    }
     post_main(WM_PASSIVE);
 }
 
@@ -626,6 +673,11 @@ fn on_outcomes(hwnd: HWND) {
             let wanted = outcome.force || (changed && !first && app.config.hud.on_window_switch);
             if wanted && app.config.hud.enabled {
                 app.hud.show(snapshot, &app.config.hud);
+                REMINDER.with(|r| {
+                    if let Some(r) = r.borrow_mut().as_mut() {
+                        r.hud_shown(now_ms());
+                    }
+                });
             }
             changed
         });
@@ -658,6 +710,12 @@ unsafe extern "system" fn window_proc(
             send(Job::Toggle);
             LRESULT(0)
         }
+        WM_REMIND => {
+            REMIND_PENDING.with(|p| p.set(true));
+            // SAFETY: restarts the debounce timer of this window.
+            unsafe { SetTimer(Some(hwnd), TIMER_DEBOUNCE, DEBOUNCE_MS, None) };
+            LRESULT(0)
+        }
         WM_PASSIVE => {
             // SAFETY: restarts the debounce timer of this window.
             unsafe { SetTimer(Some(hwnd), TIMER_DEBOUNCE, DEBOUNCE_MS, None) };
@@ -666,7 +724,10 @@ unsafe extern "system" fn window_proc(
         WM_TIMER if wparam.0 == TIMER_DEBOUNCE => {
             // SAFETY: stops the timer set above.
             unsafe { KillTimer(Some(hwnd), TIMER_DEBOUNCE).ok() };
-            send(Job::Probe);
+            // A pending reminder shows the HUD whatever the state; it waits for the debounce so that
+            // it reads the window that has just come to the front.
+            let remind = REMIND_PENDING.with(|p| p.replace(false));
+            send(if remind { Job::Show } else { Job::Probe });
             LRESULT(0)
         }
         WM_OUTCOME => {

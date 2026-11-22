@@ -33,13 +33,14 @@ Subcommands: `run` (foreground; the default), `start`, `stop`, `restart`, `set <
 `main.rs` is a clap CLI that delegates to a `platform` module (`imetap::win` or `imetap::mac`). The platform-independent logic is unit-tested without touching the OS:
 
 - `tap.rs`: the Ctrl double-tap detector. A tap is a Ctrl press shorter than `hold_ms` with no other key or mouse button in between; two taps within `gap_ms` fire. Timestamps come from the events themselves.
+- `reminder.rs`: the optional reminder. `resume` mode shows the HUD when the user comes back after `idle_secs` without key, mouse or focus-window activity; `resume-and-switch` also shows it when leaving a window used for `dwell_secs` without a HUD in between. Wall-clock timestamps, so sleep counts as idle.
 - `state.rs`: `Ime`, and `Snapshot` (input method plus optional Chinese/English mode) with its glyph and caption.
 - `doubao.rs`: the wire format of the Doubao IME's named pipe (`\\.\pipe\ObricIme\oime-server`).
 - `config.rs`: `config.toml` from `$XDG_CONFIG_HOME/imetap/`, else the platform default; unknown keys are errors.
 
 Windows (`src/win/`), everything event-driven with no polling:
 
-- `app.rs`: one message-loop thread owns the hidden window, tray icon, `RegisterHotKey` hotkeys, the `WH_KEYBOARD_LL`/`WH_MOUSE_LL` hooks (kept trivial; they ignore injected keys, which also covers our own `SendInput`) and two `SetWinEventHook`s (foreground change, IME change). Notifications are debounced 250 ms, then a worker thread reads the state; slow work (UI Automation, the pipe, `SendInput`) never runs on the message thread. The worker reports back by posting a message.
+- `app.rs`: one message-loop thread owns the hidden window, tray icon, `RegisterHotKey` hotkeys, the `WH_KEYBOARD_LL`/`WH_MOUSE_LL` hooks (kept trivial; they ignore injected keys, which also covers our own `SendInput`) and two `SetWinEventHook`s (foreground change, IME change). The hooks also feed the reminder, which posts a message when it is due; the next debounced read then always shows the HUD. Notifications are debounced 250 ms, then a worker thread reads the state; slow work (UI Automation, the pipe, `SendInput`) never runs on the message thread. The worker reports back by posting a message.
 - `ime.rs`: TSF `ITfInputProcessorProfileMgr` to activate and identify Pinyin and Doubao by CLSID; the US layout is requested from the foreground window with `WM_INPUTLANGCHANGEREQUEST`.
 - `doubao.rs`: Doubao's mode is read and set over its named pipe (ops 13/14); the server also updates its own status icon.
 - `hotkey.rs`: Microsoft Pinyin's mode lives in the engine inside `ctfmon.exe`; IMM messages, TSF compartments, `ImmSimulateHotKey` and the language bar all fail in TSF-native apps (new Notepad, Edge). The only thing that works is the system IME toggle hotkey, whose combination is read from `HKCU\Control Panel\Input Method\Hot Keys\00000010` (default Ctrl+Space) and sent with `SendInput`. Do not hard-code it.
@@ -47,7 +48,7 @@ Windows (`src/win/`), everything event-driven with no polling:
 - `hud.rs`: a layered, topmost, no-activate, click-through window on the monitor of the foreground window (primary if none), bottom centre, faded out by timers.
 - `autostart.rs`: the `HKCU\...\Run` value.
 
-macOS (`src/mac/`), a port of `ime.lua`: the double-tap swaps the US source and the last-used Chinese source (persisted next to the config); there is no mode to read, because Doubao and Shuangpin are separate input sources. A Quartz event tap (needs Accessibility) handles the double-tap and the hotkeys; the HUD is an `NSPanel`, the tray an `NSStatusItem`; focus and input-source changes come from `NSWorkspace` and the distributed notification `com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged`. The login item is a LaunchAgent plist.
+macOS (`src/mac/`), a port of `ime.lua`: the double-tap swaps the US source and the last-used Chinese source (persisted next to the config); there is no mode to read, because Doubao and Shuangpin are separate input sources. A Quartz event tap (needs Accessibility) handles the double-tap and the hotkeys, and a second, listen-only tap watches mouse movement for the reminder; the HUD is an `NSPanel`, the tray an `NSStatusItem`; focus and input-source changes come from `NSWorkspace` and the distributed notification `com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged`. The login item is a LaunchAgent plist.
 
 All `unsafe` FFI is confined to `src/win/` and `src/mac/ffi.rs`, each call with a `SAFETY` comment.
 

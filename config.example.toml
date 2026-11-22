@@ -1,0 +1,38 @@
+# imetap configuration. Every key is optional; the values below are the defaults.
+# Restart imetap after editing (`imetap restart`).
+
+[tap]
+# Double-tap Ctrl to toggle Chinese/English.
+enabled = true
+# Longest time between the two taps, in milliseconds.
+gap_ms = 500
+# Longest time Ctrl may be held for a press to count as a tap, in milliseconds.
+hold_ms = 300
+
+[hotkeys]
+# Global hotkeys that switch the input method. An empty string disables one.
+us = "Ctrl+Shift+S"
+# Microsoft Pinyin on Windows, Shuangpin on macOS.
+chinese = "Ctrl+Shift+F"
+doubao = "Ctrl+Shift+D"
+
+[hud]
+enabled = true
+# Also show the HUD when switching to a window whose input method or mode differs.
+on_window_switch = true
+# How long it stays fully visible, in milliseconds.
+duration_ms = 900
+# 0.05 (almost invisible) to 1.0 (opaque).
+opacity = 0.85
+
+[reminder]
+# Show the HUD again when the input method may have been forgotten.
+enabled = false
+# "resume": when you come back after the computer sat idle (no key, mouse or focus-window activity).
+# "resume-and-switch": also when you leave a window you used for `dwell_secs` or longer without the
+# HUD appearing, even if the next window has the same input method.
+mode = "resume"
+# How long without activity counts as idle, in seconds.
+idle_secs = 300
+# How long a window must have been used, in seconds (resume-and-switch only).
+dwell_secs = 600

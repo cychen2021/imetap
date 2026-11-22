@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::reminder::ReminderMode;
 use crate::state::Ime;
 use crate::tap::TapDetector;
 
@@ -147,6 +148,30 @@ impl Default for HudConfig {
     }
 }
 
+/// `[reminder]`: show the HUD again when the input method may have been forgotten.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReminderConfig {
+    pub enabled: bool,
+    pub mode: ReminderMode,
+    /// How long without key, mouse or focus-window activity counts as idle, in seconds.
+    pub idle_secs: u64,
+    /// In `resume-and-switch` mode, how long a window must have been used, without the HUD
+    /// appearing, for leaving it to show the HUD, in seconds.
+    pub dwell_secs: u64,
+}
+
+impl Default for ReminderConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: ReminderMode::Resume,
+            idle_secs: 300,
+            dwell_secs: 600,
+        }
+    }
+}
+
 /// The whole file.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -154,6 +179,7 @@ pub struct Config {
     pub tap: TapConfig,
     pub hotkeys: HotkeyConfig,
     pub hud: HudConfig,
+    pub reminder: ReminderConfig,
 }
 
 impl Config {
@@ -193,6 +219,9 @@ impl Config {
         if !(0.05..=1.0).contains(&self.hud.opacity) {
             bail!("hud.opacity must be between 0.05 and 1.0");
         }
+        if self.reminder.idle_secs == 0 || self.reminder.dwell_secs == 0 {
+            bail!("reminder.idle_secs and reminder.dwell_secs must be at least 1");
+        }
         for ime in [Ime::Us, Ime::Pinyin, Ime::Doubao] {
             self.shortcut(ime)?;
         }
@@ -200,34 +229,9 @@ impl Config {
     }
 }
 
-/// A commented `config.toml` with every default spelled out; written by `imetap config init`.
-pub const DEFAULT_TOML: &str = r#"# imetap configuration. Every key is optional; the values below are the defaults.
-# Restart imetap after editing (`imetap restart`).
-
-[tap]
-# Double-tap Ctrl to toggle Chinese/English.
-enabled = true
-# Longest time between the two taps, in milliseconds.
-gap_ms = 500
-# Longest time Ctrl may be held for a press to count as a tap, in milliseconds.
-hold_ms = 300
-
-[hotkeys]
-# Global hotkeys that switch the input method. An empty string disables one.
-us = "Ctrl+Shift+S"
-# Microsoft Pinyin on Windows, Shuangpin on macOS.
-chinese = "Ctrl+Shift+F"
-doubao = "Ctrl+Shift+D"
-
-[hud]
-enabled = true
-# Also show the HUD when switching to a window whose input method or mode differs.
-on_window_switch = true
-# How long it stays fully visible, in milliseconds.
-duration_ms = 900
-# 0.05 (almost invisible) to 1.0 (opaque).
-opacity = 0.85
-"#;
+/// A commented `config.toml` with every default spelled out (`config.example.toml`); written by
+/// `imetap config init`.
+pub const DEFAULT_TOML: &str = include_str!("../config.example.toml");
 
 /// Where `config.toml` is looked up.
 pub fn config_path() -> Option<PathBuf> {
@@ -288,6 +292,20 @@ mod tests {
         assert!(Config::parse("[hud]\nopacity = 0\n").is_err());
         assert!(Config::parse("[hud]\nopacity = 1.5\n").is_err());
         assert!(Config::parse("[hud]\nopacity = 0.5\n").is_ok());
+    }
+
+    #[test]
+    fn the_reminder_is_off_by_default_and_configurable() {
+        assert!(!Config::default().reminder.enabled);
+        let c = Config::parse(
+            "[reminder]\nenabled = true\nmode = \"resume-and-switch\"\ndwell_secs = 120\n",
+        )
+        .unwrap();
+        assert!(c.reminder.enabled);
+        assert_eq!(c.reminder.mode, ReminderMode::ResumeAndSwitch);
+        assert_eq!(c.reminder.dwell_secs, 120);
+        assert_eq!(c.reminder.idle_secs, 300);
+        assert!(Config::parse("[reminder]\nidle_secs = 0\n").is_err());
     }
 
     #[test]

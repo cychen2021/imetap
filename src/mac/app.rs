@@ -29,6 +29,7 @@ use objc2_foundation::{
 use super::ffi::{self, CFMachPortRef, CFRunLoopTimerRef, CGEventRef, CGEventTapProxy};
 use super::{Engine, autostart_enabled, claim_pid, open, set_autostart};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
+use crate::reminder::{Reminder, now_ms};
 use crate::state::{Ime, Snapshot};
 use crate::tap::{Key, TapDetector};
 
@@ -103,6 +104,12 @@ thread_local! {
     // The tap callback touches these two only, so it never collides with a borrow of `STATE`.
     static TAP: RefCell<TapDetector> = RefCell::new(TapDetector::default());
     static TAP_PORT: Cell<usize> = const { Cell::new(0) };
+    /// The listen-only tap that sees mouse movement, for the reminder.
+    static ACTIVITY_PORT: Cell<usize> = const { Cell::new(0) };
+    /// `None` when the reminder is off. Kept out of `STATE` like `TAP`.
+    static REMINDER: RefCell<Option<Reminder>> = const { RefCell::new(None) };
+    /// The next probe shows the HUD even if nothing changed.
+    static REMIND_PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Runs the tool until the user quits from the status item menu.
@@ -123,6 +130,11 @@ pub fn run(config: Config) -> Result<()> {
         })
         .collect();
     TAP.with(|t| *t.borrow_mut() = TapDetector::new(config.tap.gap_ms, config.tap.hold_ms));
+    let r = &config.reminder;
+    if r.enabled {
+        let reminder = Reminder::new(r.mode, r.idle_secs, r.dwell_secs, now_ms());
+        REMINDER.with(|cell| *cell.borrow_mut() = Some(reminder));
+    }
 
     let status_item = make_status_item(mtm);
     let hud = make_hud(mtm);
@@ -142,7 +154,7 @@ pub fn run(config: Config) -> Result<()> {
 
     start_event_tap();
     observe_changes();
-    probe(false);
+    probe(false, false);
     app.run();
     Ok(())
 }
@@ -268,12 +280,68 @@ fn start_event_tap() {
         return;
     }
     TAP_PORT.with(|p| p.set(port as usize));
-    // SAFETY: attaches the tap's mach port to the main run loop.
+    attach_tap(port);
+    if REMINDER.with(|r| r.borrow().is_some()) {
+        start_activity_tap();
+    }
+}
+
+/// Attaches a tap's mach port to the main run loop and enables it.
+fn attach_tap(port: CFMachPortRef) {
+    // SAFETY: `port` is a live event tap.
     unsafe {
         let source = ffi::CFMachPortCreateRunLoopSource(ptr::null(), port, 0);
         ffi::CFRunLoopAddSource(ffi::CFRunLoopGetMain(), source, ffi::kCFRunLoopCommonModes);
         ffi::CGEventTapEnable(port, true);
     }
+}
+
+/// A listen-only tap for mouse movement, kept apart from the main tap so that the flood of moves
+/// never waits on the hotkey logic. Keys and clicks reach the reminder through the main tap.
+fn start_activity_tap() {
+    let mask = [
+        ffi::MOUSE_MOVED,
+        ffi::LEFT_MOUSE_DRAGGED,
+        ffi::RIGHT_MOUSE_DRAGGED,
+        ffi::OTHER_MOUSE_DRAGGED,
+        ffi::SCROLL_WHEEL,
+    ]
+    .into_iter()
+    .fold(0u64, |acc, t| acc | 1 << t);
+    // SAFETY: creates a tap whose callback is a plain `extern "C"` function.
+    let port = unsafe {
+        ffi::CGEventTapCreate(
+            0, /* session */
+            1, /* tail */
+            1, /* listen only */
+            mask,
+            activity_callback,
+            ptr::null_mut(),
+        )
+    };
+    if port.is_null() {
+        eprintln!("imetap: cannot watch the mouse for the reminder");
+        return;
+    }
+    ACTIVITY_PORT.with(|p| p.set(port as usize));
+    attach_tap(port);
+}
+
+extern "C" fn activity_callback(
+    _: CGEventTapProxy,
+    kind: u32,
+    event: CGEventRef,
+    _: *mut c_void,
+) -> CGEventRef {
+    match kind {
+        ffi::TAP_DISABLED_BY_TIMEOUT | ffi::TAP_DISABLED_BY_USER_INPUT => {
+            let port = ACTIVITY_PORT.with(Cell::get) as CFMachPortRef;
+            // SAFETY: the port was created by `start_activity_tap`.
+            unsafe { ffi::CGEventTapEnable(port, true) };
+        }
+        _ => note_activity(),
+    }
+    event
 }
 
 extern "C" fn retry_tap(_: CFRunLoopTimerRef, _: *mut c_void) {
@@ -300,7 +368,11 @@ extern "C" fn tap_callback(
             let port = TAP_PORT.with(Cell::get) as CFMachPortRef;
             // SAFETY: the port was created by `start_event_tap`.
             unsafe { ffi::CGEventTapEnable(port, true) };
+            return event;
         }
+        _ => note_activity(),
+    }
+    match kind {
         ffi::FLAGS_CHANGED => {
             if code == KEYCODE_CTRL_LEFT || code == KEYCODE_CTRL_RIGHT {
                 let tapped = TAP.with(|t| {
@@ -371,8 +443,8 @@ fn act(action: Action) {
     });
 }
 
-/// Reads the state; shows the HUD only if it differs from the last one seen.
-fn probe(show_if_changed: bool) {
+/// Reads the state; shows the HUD only if it differs from the last one seen, or if `force`.
+fn probe(show_if_changed: bool, force: bool) {
     STATE.with(|s| {
         let Ok(mut s) = s.try_borrow_mut() else {
             return;
@@ -382,14 +454,46 @@ fn probe(show_if_changed: bool) {
         let changed = state.last != Some(snapshot);
         let first = state.last.is_none();
         state.last = Some(snapshot);
-        if changed && show_if_changed && !first && state.config.hud.on_window_switch {
+        if force || (changed && show_if_changed && !first && state.config.hud.on_window_switch) {
             show_hud(state, snapshot);
         }
     });
 }
 
 extern "C" fn probe_timer_fired(_: CFRunLoopTimerRef, _: *mut c_void) {
-    probe(true);
+    probe(true, REMIND_PENDING.replace(false));
+}
+
+/// Shows the HUD once the state has settled, whatever it is.
+fn remind() {
+    REMIND_PENDING.set(true);
+    schedule_probe();
+}
+
+/// Feeds key or mouse activity to the reminder.
+fn note_activity() {
+    let resumed = REMINDER.with(|r| {
+        r.borrow_mut()
+            .as_mut()
+            .is_some_and(|r| r.activity(now_ms()))
+    });
+    if resumed {
+        remind();
+    }
+}
+
+/// Feeds a change of the frontmost application to the reminder, then reads the state.
+fn focus_changed() {
+    let due = REMINDER.with(|r| {
+        r.borrow_mut()
+            .as_mut()
+            .is_some_and(|r| r.focus_changed(now_ms()))
+    });
+    if due {
+        remind();
+    } else {
+        schedule_probe();
+    }
 }
 
 /// Debounces a burst of focus / input-source notifications into one probe.
@@ -455,7 +559,7 @@ fn observe_changes() {
             4,
         );
 
-        let block = RcBlock::new(|_: NonNull<NSNotification>| schedule_probe());
+        let block = RcBlock::new(|_: NonNull<NSNotification>| focus_changed());
         let center = NSWorkspace::sharedWorkspace().notificationCenter();
         let observer = center.addObserverForName_object_queue_usingBlock(
             Some(NSWorkspaceDidActivateApplicationNotification),
@@ -655,6 +759,11 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
     if !state.config.hud.enabled {
         return;
     }
+    REMINDER.with(|r| {
+        if let Some(r) = r.borrow_mut().as_mut() {
+            r.hud_shown(now_ms());
+        }
+    });
     let hud = &state.hud;
     hud.glyph
         .setStringValue(&NSString::from_str(snapshot.glyph()));

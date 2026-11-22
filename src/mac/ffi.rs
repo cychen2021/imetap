@@ -122,10 +122,15 @@ unsafe extern "C" {
 /// Event types and fields of Quartz events.
 pub const LEFT_MOUSE_DOWN: u32 = 1;
 pub const RIGHT_MOUSE_DOWN: u32 = 3;
+pub const MOUSE_MOVED: u32 = 5;
+pub const LEFT_MOUSE_DRAGGED: u32 = 6;
+pub const RIGHT_MOUSE_DRAGGED: u32 = 7;
 pub const KEY_DOWN: u32 = 10;
 pub const KEY_UP: u32 = 11;
 pub const FLAGS_CHANGED: u32 = 12;
+pub const SCROLL_WHEEL: u32 = 22;
 pub const OTHER_MOUSE_DOWN: u32 = 25;
+pub const OTHER_MOUSE_DRAGGED: u32 = 27;
 pub const TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
 pub const TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
 pub const FIELD_KEYCODE: u32 = 9;

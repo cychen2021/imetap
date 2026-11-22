@@ -5,6 +5,7 @@ A small tray tool for Windows and macOS that makes switching between Chinese and
 - Global hotkeys switch the input method: `Ctrl+Shift+S` US, `Ctrl+Shift+F` Microsoft Pinyin (Shuangpin on macOS), `Ctrl+Shift+D` Doubao.
 - Double-tap `Ctrl` to toggle Chinese/English in the current input method.
 - A small translucent HUD at the bottom of the current window's monitor shows the new state after every change, and also when you switch to a window whose input method or mode differs (they are per window on Windows).
+- Optionally, a reminder shows the HUD again when you come back after the computer sat idle, and (in `resume-and-switch` mode) when you leave a window you used for a long time without seeing the HUD.
 - A tray icon shows the current state at a glance: red for Chinese, blue for English, grey for the US layout.
 - It is event-driven and does not poll.
 
@@ -31,7 +32,7 @@ imetap config path|init|edit|check
 
 ## Configuration
 
-`config.toml` lives in `$XDG_CONFIG_HOME/imetap/`, or the platform default (`%APPDATA%\imetap` on Windows, `~/Library/Application Support/imetap` on macOS). Every key is optional. `imetap config init` writes the defaults with comments; restart with `imetap restart` after editing.
+`config.toml` lives in `$XDG_CONFIG_HOME/imetap/`, or the platform default (`%APPDATA%\imetap` on Windows, `~/Library/Application Support/imetap` on macOS). Every key is optional. `imetap config init` writes the defaults with comments, the same as [`config.example.toml`](config.example.toml); restart with `imetap restart` after editing.
 
 ```toml
 [tap]
@@ -49,7 +50,15 @@ enabled = true
 on_window_switch = true
 duration_ms = 900
 opacity = 0.85
+
+[reminder]
+enabled = false
+mode = "resume"  # or "resume-and-switch"
+idle_secs = 300  # no key, mouse or focus-window activity for this long counts as idle
+dwell_secs = 600 # resume-and-switch: leaving a window used this long without a HUD shows it
 ```
+
+On macOS the reminder sees changes of the frontmost application, not of windows within one application.
 
 ## Notes
 
