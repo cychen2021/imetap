@@ -19,6 +19,7 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result, bail};
 
 use crate::config::config_path;
+use crate::daemon_exe;
 use crate::state::{Ime, Snapshot};
 
 const SOURCE_US: &str = "com.apple.keylayout.US";
@@ -190,7 +191,7 @@ pub fn stop() -> Result<bool> {
 }
 
 pub fn start() -> Result<()> {
-    let exe = std::env::current_exe()?;
+    let exe = daemon_exe()?;
     Command::new(exe)
         .arg("run")
         .stdin(std::process::Stdio::null())
@@ -229,7 +230,7 @@ pub fn autostart_enabled() -> bool {
 pub fn set_autostart(enabled: bool) -> Result<()> {
     let path = launch_agent_path()?;
     if enabled {
-        let exe = std::env::current_exe()?;
+        let exe = daemon_exe()?;
         fs::create_dir_all(path.parent().context("no parent directory")?)?;
         fs::write(&path, launch_agent_plist(&exe.display().to_string()))?;
     } else if path.exists() {

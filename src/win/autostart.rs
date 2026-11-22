@@ -9,6 +9,8 @@ use std::env;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 
+use crate::daemon_exe;
+
 use anyhow::Result;
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegDeleteValueW,
@@ -36,11 +38,9 @@ pub fn task_exists() -> bool {
 
 /// Creates the logon task for the current user; fails without elevation.
 fn create_task() -> bool {
-    let (Ok(exe), Ok(user), Ok(domain)) = (
-        env::current_exe(),
-        env::var("USERNAME"),
-        env::var("USERDOMAIN"),
-    ) else {
+    let (Ok(exe), Ok(user), Ok(domain)) =
+        (daemon_exe(), env::var("USERNAME"), env::var("USERDOMAIN"))
+    else {
         return false;
     };
     let command = format!("\"{}\" run", exe.display());
@@ -99,7 +99,7 @@ fn set_run_entry(enabled: bool) -> Result<()> {
         )
         .ok()?;
         let result = if enabled {
-            let command = format!("\"{}\" run", env::current_exe()?.display());
+            let command = format!("\"{}\" run", daemon_exe()?.display());
             let wide: Vec<u8> = command
                 .encode_utf16()
                 .chain(Some(0))

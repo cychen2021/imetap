@@ -30,7 +30,7 @@ Subcommands: `run` (foreground; the default), `start`, `stop`, `restart`, `set <
 
 ## Architecture
 
-`main.rs` is a clap CLI that delegates to a `platform` module (`imetap::win` or `imetap::mac`). The platform-independent logic is unit-tested without touching the OS:
+`cli.rs` is a clap CLI that delegates to a `platform` module (`imetap::win` or `imetap::mac`). Two thin binaries call it: `main.rs` (`imetap`, GUI subsystem on Windows, attaches to the parent console) and `src/bin/imetapctl.rs` (console subsystem, so output works in pipes; prints help without a command). On non-Windows platforms `imetapctl` is a stub that points to `imetap`. `daemon_exe()` in `lib.rs` makes `imetapctl` start and register the `imetap` next to it. The platform-independent logic is unit-tested without touching the OS:
 
 - `tap.rs`: the Ctrl double- and triple-tap detector. A tap is a Ctrl press shorter than `hold_ms` with no other key or mouse button in between; two taps within `gap_ms` fire. A third tap within `triple_ms` makes a triple tap (show the HUD), so the double tap is held back until a timer of `triple_ms` expires or another key or click resolves it. Timestamps come from the events themselves.
 - `reminder.rs`: the optional reminder. `resume` mode shows the HUD when the user comes back after `idle_secs` without key, mouse or focus-window activity; `resume-and-switch` also shows it when leaving a window used for `dwell_secs` without a HUD in between. Wall-clock timestamps, so sleep counts as idle.

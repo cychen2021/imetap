@@ -28,6 +28,8 @@ imetap autostart enable|disable|status
 imetap config path|init|edit|check
 ```
 
+On Windows, `imetap.exe` is a GUI-subsystem program, so its output does not reach pipes or scripts. `imetapctl` takes the same commands (except that it starts nothing by itself) as a console program with normal output; it launches and registers the `imetap` next to it. On macOS it is only a stub; use `imetap` there.
+
 `imetap run` runs in the foreground. The tray menu offers "Run at login", "Open config file" and "Quit".
 
 ## Configuration
