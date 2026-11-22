@@ -9,6 +9,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::config::{self, Config};
 use crate::debug;
+use crate::mingkuai;
 use crate::state::Ime;
 
 /// Switch input methods, toggle Chinese/English and show a HUD for each change.
@@ -88,6 +89,11 @@ enum ConfigAction {
 /// `imetap` attaches to the parent's console for everything but `run`.
 pub fn main(console: bool) -> Result<()> {
     let cli = Cli::parse();
+    // The hidden Mingkuai support needs the config in every command, not only in `run`. A broken
+    // config leaves it off here: `run` and `config check` report the error.
+    if let Some(Ok(config)) = config::config_path().map(|path| Config::load(&path)) {
+        mingkuai::set_enabled(config.mingkuai.enable);
+    }
     let command = match cli.command {
         Some(command) => command,
         None if console => {
@@ -141,7 +147,9 @@ pub fn main(console: bool) -> Result<()> {
             Ok(())
         }
         Command::Set { ime } => {
-            let ime = Ime::parse(&ime).ok_or_else(|| anyhow!("unknown input method `{ime}`"))?;
+            let ime = Ime::parse(&ime)
+                .filter(|&i| i != Ime::Mingkuai || mingkuai::enabled())
+                .ok_or_else(|| anyhow!("unknown input method `{ime}`"))?;
             platform::engine().set(ime)
         }
         Command::Toggle => platform::engine().toggle(),

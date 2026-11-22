@@ -17,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{GUID, PCWSTR};
 
+use crate::mingkuai;
 use crate::state::Ime;
 
 /// Simplified Chinese (PRC), the language id the Chinese IMEs register under.
@@ -36,6 +37,12 @@ const DOUBAO: (GUID, GUID) = (
     GUID::from_u128(0x2B4D4B3A_4D4F_4C0A_8E66_7F771A2B9C10),
 );
 
+/// Mingkuai. The ids are fixed in the Mingkuai repository (`mingkuai/docs/text-service.md`).
+const MINGKUAI: (GUID, GUID) = (
+    GUID::from_u128(0x7690FA7F_3909_4316_9F13_EFEE73A2C137),
+    GUID::from_u128(0xD7E77583_FDB8_4315_8C70_3BD3024F7582),
+);
+
 fn profile_mgr() -> Result<ITfInputProcessorProfileMgr> {
     // SAFETY: plain COM activation of an in-process system class on a COM-initialised thread.
     Ok(unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)? })
@@ -53,6 +60,7 @@ pub fn activate(ime: Ime) -> Result<()> {
         }
         Ime::Pinyin => PINYIN,
         Ime::Doubao => DOUBAO,
+        Ime::Mingkuai if mingkuai::enabled() => MINGKUAI,
         other => bail!("{} is not available on Windows", other.name()),
     };
     // A window that sits on the US layout stays there when only the session profile changes, so
@@ -115,6 +123,7 @@ pub fn current() -> Ime {
     match active_tip() {
         Some(clsid) if clsid == PINYIN.0 => Ime::Pinyin,
         Some(clsid) if clsid == DOUBAO.0 => Ime::Doubao,
+        Some(clsid) if clsid == MINGKUAI.0 && mingkuai::enabled() => Ime::Mingkuai,
         _ => Ime::Other,
     }
 }

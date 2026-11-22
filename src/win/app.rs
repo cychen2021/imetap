@@ -657,7 +657,7 @@ fn modifiers(shortcut: &Shortcut) -> HOT_KEY_MODIFIERS {
     flags
 }
 
-const HOTKEY_IMES: [Ime; 3] = [Ime::Us, Ime::Pinyin, Ime::Doubao];
+const HOTKEY_IMES: [Ime; 4] = [Ime::Us, Ime::Pinyin, Ime::Doubao, Ime::Mingkuai];
 
 /// Registers the configured hotkeys. Returns the ids that succeeded. The id is the index in
 /// `HOTKEY_IMES`.

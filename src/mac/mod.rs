@@ -34,7 +34,8 @@ fn source_id(ime: Ime) -> Option<&'static str> {
         Ime::Us => Some(SOURCE_US),
         Ime::Doubao => Some(SOURCE_DOUBAO),
         Ime::Shuangpin => Some(SOURCE_SHUANGPIN),
-        Ime::Pinyin | Ime::Other => None,
+        // The macOS frontend of Mingkuai does not exist yet.
+        Ime::Pinyin | Ime::Mingkuai | Ime::Other => None,
     }
 }
 

@@ -10,6 +10,7 @@ pub mod debug;
 pub mod doubao;
 pub mod fade;
 pub mod hold;
+pub mod mingkuai;
 pub mod reminder;
 pub mod state;
 pub mod tap;

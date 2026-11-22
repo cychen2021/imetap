@@ -156,6 +156,10 @@ pub struct HudConfig {
     pub ime_colors: ImeColors,
     /// The big label on the stripe, by input method.
     pub ime_labels: ImeLabels,
+    /// Stripe colour and label of Mingkuai. Not a key of `[hud]`: `Config::parse` copies them
+    /// from the hidden `[mingkuai-integrate]`.
+    #[serde(skip)]
+    pub mingkuai: (Color, String),
 }
 
 /// `[hud.colors]`: the background for Chinese and for English mode, by colour name.
@@ -241,6 +245,7 @@ impl HudConfig {
             (Ime::Pinyin, _) => (self.ime_colors.pinyin, self.ime_labels.pinyin.clone()),
             (Ime::Doubao, _) => (self.ime_colors.doubao, self.ime_labels.doubao.clone()),
             (Ime::Shuangpin, _) => (self.ime_colors.shuangpin, self.ime_labels.shuangpin.clone()),
+            (Ime::Mingkuai, _) => (self.mingkuai.0, self.mingkuai.1.clone()),
             (Ime::Other, None) => (self.ime_colors.other, self.ime_labels.other.clone()),
         };
         let background = match snapshot.glyph() {
@@ -268,6 +273,7 @@ impl Default for HudConfig {
             colors: ModeColors::default(),
             ime_colors: ImeColors::default(),
             ime_labels: ImeLabels::default(),
+            mingkuai: (Color::Teal, "明".into()),
         }
     }
 }
@@ -304,12 +310,41 @@ pub struct Config {
     pub hotkeys: HotkeyConfig,
     pub hud: HudConfig,
     pub reminder: ReminderConfig,
+    /// The hidden Mingkuai support. It is not in `config.example.toml`.
+    #[serde(rename = "mingkuai-integrate")]
+    pub mingkuai: MingkuaiConfig,
+}
+
+/// `[mingkuai-integrate]`: the hidden Mingkuai support. Off by default.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MingkuaiConfig {
+    /// Whether imetap knows Mingkuai. When false, Mingkuai counts as an unknown input method.
+    pub enable: bool,
+    /// The hotkey that switches to Mingkuai. Empty disables it.
+    pub hotkey: String,
+    /// The colour of its stripe on the HUD.
+    pub color: Color,
+    /// Its big label on the HUD, one or two characters.
+    pub label: String,
+}
+
+impl Default for MingkuaiConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            hotkey: String::new(),
+            color: Color::Teal,
+            label: "明".into(),
+        }
+    }
 }
 
 impl Config {
     /// Parses the text of a `config.toml` and checks the values.
     pub fn parse(text: &str) -> Result<Config> {
-        let config: Config = toml::from_str(text)?;
+        let mut config: Config = toml::from_str(text)?;
+        config.hud.mingkuai = (config.mingkuai.color, config.mingkuai.label.clone());
         config.validate()?;
         Ok(config)
     }
@@ -329,7 +364,8 @@ impl Config {
             Ime::Us => &self.hotkeys.us,
             Ime::Pinyin | Ime::Shuangpin => &self.hotkeys.chinese,
             Ime::Doubao => &self.hotkeys.doubao,
-            Ime::Other => return Ok(None),
+            Ime::Mingkuai if self.mingkuai.enable => &self.mingkuai.hotkey,
+            Ime::Mingkuai | Ime::Other => return Ok(None),
         };
         if text.trim().is_empty() {
             return Ok(None);
@@ -358,10 +394,13 @@ impl Config {
                 bail!("hud.ime_labels.{name} must be one or two characters");
             }
         }
+        if !(1..=2).contains(&self.mingkuai.label.chars().count()) {
+            bail!("mingkuai-integrate.label must be one or two characters");
+        }
         if self.reminder.idle_secs == 0 || self.reminder.dwell_secs == 0 {
             bail!("reminder.idle_secs and reminder.dwell_secs must be at least 1");
         }
-        for ime in [Ime::Us, Ime::Pinyin, Ime::Doubao] {
+        for ime in [Ime::Us, Ime::Pinyin, Ime::Doubao, Ime::Mingkuai] {
             self.shortcut(ime)?;
         }
         Ok(())
@@ -535,6 +574,22 @@ mod tests {
     #[test]
     fn a_bad_hotkey_fails_the_whole_file() {
         assert!(Config::parse("[hotkeys]\ndoubao = \"D\"\n").is_err());
+    }
+
+    #[test]
+    fn the_mingkuai_support_is_hidden_and_off_by_default() {
+        let c = Config::default();
+        assert!(!c.mingkuai.enable);
+        assert!(!DEFAULT_TOML.contains("mingkuai"));
+        assert_eq!(c.shortcut(Ime::Mingkuai).unwrap(), None);
+        let text = "[mingkuai-integrate]\nenable = true\nhotkey = \"Ctrl+Shift+M\"\ncolor = \"pink\"\nlabel = \"明快\"\n";
+        let c = Config::parse(text).unwrap();
+        assert!(c.mingkuai.enable);
+        assert!(c.shortcut(Ime::Mingkuai).unwrap().is_some());
+        let style = c.hud.style(Snapshot::new(Ime::Mingkuai, Some(true)));
+        assert_eq!(style.label, "明快");
+        assert!(Config::parse("[mingkuai-integrate]\nlabel = \"\"\n").is_err());
+        assert!(Config::parse("[mingkuai-integrate]\nunknown = 1\n").is_err());
     }
 
     #[test]

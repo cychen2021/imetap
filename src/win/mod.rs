@@ -9,6 +9,7 @@ pub mod doubao;
 pub mod hotkey;
 pub mod hud;
 pub mod ime;
+pub mod mingkuai;
 pub mod uia;
 
 use std::thread;
@@ -42,6 +43,7 @@ impl Engine {
         let ime = ime::current();
         let chinese = match ime {
             Ime::Doubao => doubao::is_chinese().ok(),
+            Ime::Mingkuai => mingkuai::is_chinese().ok(),
             Ime::Pinyin => self.tray.as_ref().and_then(|t| t.chinese_mode()),
             _ => None,
         };
@@ -122,6 +124,7 @@ impl Engine {
     pub fn toggle(&self) -> Result<()> {
         match ime::current() {
             Ime::Doubao => doubao::set_chinese(!doubao::is_chinese()?),
+            Ime::Mingkuai => mingkuai::set_chinese(!mingkuai::is_chinese()?),
             Ime::Pinyin => hotkey::send_toggle(),
             _ => Ok(()),
         }

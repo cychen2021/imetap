@@ -18,6 +18,8 @@ pub enum Ime {
     Doubao,
     /// Apple Shuangpin (macOS).
     Shuangpin,
+    /// Mingkuai (Windows). Known only when `mingkuai-integrate.enable` is set.
+    Mingkuai,
     /// Anything else (another layout or IME).
     Other,
 }
@@ -30,6 +32,7 @@ impl Ime {
             Ime::Pinyin => "Microsoft Pinyin",
             Ime::Doubao => "Doubao",
             Ime::Shuangpin => "Shuangpin",
+            Ime::Mingkuai => "Mingkuai",
             Ime::Other => "Other",
         }
     }
@@ -40,6 +43,7 @@ impl Ime {
             Ime::Pinyin => "微软拼音",
             Ime::Doubao => "豆包",
             Ime::Shuangpin => "双拼",
+            Ime::Mingkuai => "明快",
             Ime::Us | Ime::Other => self.name(),
         }
     }
@@ -51,6 +55,7 @@ impl Ime {
             "pinyin" => Some(Ime::Pinyin),
             "doubao" => Some(Ime::Doubao),
             "shuangpin" => Some(Ime::Shuangpin),
+            "mingkuai" => Some(Ime::Mingkuai),
             _ => None,
         }
     }
