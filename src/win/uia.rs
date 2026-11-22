@@ -46,6 +46,9 @@ impl FocusInfo {
 }
 
 const CONTROL_EDIT: i32 = 50004;
+const CONTROL_LIST_ITEM: i32 = 50007;
+const CONTROL_TREE_ITEM: i32 = 50024;
+const CONTROL_DATA_ITEM: i32 = 50029;
 const CONTROL_CUSTOM: i32 = 50025;
 const CONTROL_WINDOW: i32 = 50032;
 const CONTROL_PANE: i32 = 50033;
@@ -61,7 +64,15 @@ pub fn is_text_field(info: FocusInfo) -> bool {
     if info.value_read_only == Some(true) {
         return false;
     }
-    if info.control_type == CONTROL_EDIT || info.value_read_only == Some(false) {
+    if info.control_type == CONTROL_EDIT {
+        return true;
+    }
+    // Explorer's file and folder items expose a writable value (the rename name), but are not fields.
+    let item = matches!(
+        info.control_type,
+        CONTROL_LIST_ITEM | CONTROL_TREE_ITEM | CONTROL_DATA_ITEM
+    );
+    if info.value_read_only == Some(false) && !item {
         return true;
     }
     if info.text_pattern {
@@ -126,11 +137,12 @@ pub fn foreground_is_chromium() -> bool {
 }
 
 /// Whether a window class is a piece of the Windows shell: the taskbar, the desktop, the task view,
-/// Start and search. They expose a bare window, but nothing in them is typed into by accident.
+/// Start, search and the Explorer window. They expose a bare window, but nothing in them is typed into by accident.
 pub fn is_shell_class(class: &str) -> bool {
     matches!(
         class,
         "Shell_TrayWnd"
+            | "CabinetWClass"
             | "Shell_SecondaryTrayWnd"
             | "Progman"
             | "WorkerW"
@@ -238,6 +250,13 @@ mod tests {
         // Word's document, Windows Terminal's terminal control.
         assert!(is_text_field(focus(50030, true, None, false)));
         assert!(is_text_field(focus(50020, true, None, false)));
+    }
+
+    #[test]
+    fn explorer_items_are_not_text_fields() {
+        assert!(!is_text_field(focus(50007, false, Some(false), false)));
+        assert!(!is_text_field(focus(50024, false, Some(false), false)));
+        assert!(is_shell_class("CabinetWClass"));
     }
 
     #[test]
