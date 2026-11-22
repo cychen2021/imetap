@@ -52,6 +52,40 @@ impl Ime {
     }
 }
 
+/// An sRGB colour.
+pub type Rgb = [u8; 3];
+
+/// The colours of the HUD for one state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HudColors {
+    pub background: Rgb,
+    pub glyph: Rgb,
+    pub caption: Rgb,
+}
+
+impl HudColors {
+    /// Chinese: deep red, like the Windows tray icon.
+    pub const CHINESE: HudColors = HudColors {
+        background: [0xA8, 0x32, 0x2B],
+        glyph: [0xFF, 0xFF, 0xFF],
+        // White at 78% over the background.
+        caption: [0xEC, 0xD2, 0xD0],
+    };
+    /// English, including the US layout: deep blue, like the Windows tray icon.
+    pub const ENGLISH: HudColors = HudColors {
+        background: [0x1F, 0x5A, 0xA6],
+        glyph: [0xFF, 0xFF, 0xFF],
+        // White at 78% over the background.
+        caption: [0xCE, 0xDB, 0xEB],
+    };
+    /// An input method imetap does not know: neutral dark grey.
+    pub const UNKNOWN: HudColors = HudColors {
+        background: [0x20, 0x21, 0x24],
+        glyph: [0xFF, 0xFF, 0xFF],
+        caption: [0xBE, 0xC0, 0xC4],
+    };
+}
+
 /// The observable state of the foreground window's input method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Snapshot {
@@ -77,6 +111,16 @@ impl Snapshot {
         }
     }
 
+    /// The HUD's colours, which follow the glyph: red for "中", blue for "EN" (the US layout
+    /// included), grey for "?".
+    pub fn hud_colors(&self) -> HudColors {
+        match self.glyph() {
+            "中" => HudColors::CHINESE,
+            "EN" => HudColors::ENGLISH,
+            _ => HudColors::UNKNOWN,
+        }
+    }
+
     /// The small text under the glyph.
     pub fn caption(&self) -> String {
         match (self.ime, self.chinese) {
@@ -97,6 +141,30 @@ impl fmt::Display for Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colours_follow_the_language() {
+        assert_eq!(
+            Snapshot::new(Ime::Doubao, Some(true)).hud_colors(),
+            HudColors::CHINESE
+        );
+        assert_eq!(
+            Snapshot::new(Ime::Shuangpin, None).hud_colors(),
+            HudColors::CHINESE
+        );
+        assert_eq!(
+            Snapshot::new(Ime::Pinyin, Some(false)).hud_colors(),
+            HudColors::ENGLISH
+        );
+        assert_eq!(
+            Snapshot::new(Ime::Us, None).hud_colors(),
+            HudColors::ENGLISH
+        );
+        assert_eq!(
+            Snapshot::new(Ime::Other, None).hud_colors(),
+            HudColors::UNKNOWN
+        );
+    }
 
     #[test]
     fn glyph_and_caption_follow_the_mode() {

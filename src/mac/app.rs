@@ -30,7 +30,7 @@ use super::ffi::{self, CFMachPortRef, CFRunLoopTimerRef, CGEventRef, CGEventTapP
 use super::{Engine, autostart_enabled, claim_pid, open, set_autostart};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
 use crate::reminder::{Reminder, now_ms};
-use crate::state::{Ime, Snapshot};
+use crate::state::{HudColors, Ime, Rgb, Snapshot};
 use crate::tap::{Key, Tap, TapDetector};
 
 /// How long input-source and focus notifications may settle before the state is read.
@@ -759,9 +759,7 @@ fn make_hud(mtm: MainThreadMarker) -> Hud {
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
             layer.setCornerRadius(24.0);
-            layer.setBackgroundColor(Some(
-                &NSColor::colorWithSRGBRed_green_blue_alpha(0.125, 0.13, 0.14, 1.0).CGColor(),
-            ));
+            layer.setBackgroundColor(Some(&ns_color(HudColors::UNKNOWN.background).CGColor()));
         }
         view.addSubview(&glyph);
         view.addSubview(&caption);
@@ -773,6 +771,11 @@ fn make_hud(mtm: MainThreadMarker) -> Hud {
         caption,
         icon,
     }
+}
+
+fn ns_color([r, g, b]: Rgb) -> Retained<NSColor> {
+    let channel = |v: u8| v as f64 / 255.0;
+    NSColor::colorWithSRGBRed_green_blue_alpha(channel(r), channel(g), channel(b), 1.0)
 }
 
 extern "C" fn hide_hud(_: CFRunLoopTimerRef, _: *mut c_void) {
@@ -793,6 +796,12 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
         }
     });
     let hud = &state.hud;
+    let colors = snapshot.hud_colors();
+    if let Some(layer) = hud.panel.contentView().and_then(|view| view.layer()) {
+        layer.setBackgroundColor(Some(&ns_color(colors.background).CGColor()));
+    }
+    hud.glyph.setTextColor(Some(&ns_color(colors.glyph)));
+    hud.caption.setTextColor(Some(&ns_color(colors.caption)));
     hud.glyph
         .setStringValue(&NSString::from_str(snapshot.glyph()));
     hud.caption

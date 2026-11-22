@@ -23,7 +23,7 @@ use windows::core::{HSTRING, PCWSTR, w};
 
 use super::icons;
 use crate::config::HudConfig;
-use crate::state::Snapshot;
+use crate::state::{HudColors, Rgb, Snapshot};
 
 /// Timer that starts the fade-out once the hold time is over.
 const TIMER_HOLD: usize = 1;
@@ -152,7 +152,7 @@ impl Hud {
     }
 }
 
-fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
+fn rgb([r, g, b]: Rgb) -> COLORREF {
     COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
 }
 
@@ -201,7 +201,12 @@ fn paint(hwnd: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(hwnd, &mut ps);
-        let brush = CreateSolidBrush(rgb(32, 33, 36));
+        let colors = SHOWN.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map_or(HudColors::UNKNOWN, |shown| shown.snapshot.hud_colors())
+        });
+        let brush = CreateSolidBrush(rgb(colors.background));
         FillRect(hdc, &ps.rcPaint, brush);
         let _ = DeleteObject(HGDIOBJ(brush.0));
         SHOWN.with(|s| {
@@ -209,7 +214,7 @@ fn paint(hwnd: HWND) {
                 let dpi = GetDpiForSystem() as i32;
                 let px = |v: i32| v * dpi / 96;
                 SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, rgb(255, 255, 255));
+                SetTextColor(hdc, rgb(colors.glyph));
                 let glyph = RECT {
                     left: 0,
                     top: px(6),
@@ -231,7 +236,7 @@ fn paint(hwnd: HWND) {
                         DI_NORMAL,
                     );
                 }
-                SetTextColor(hdc, rgb(190, 192, 196));
+                SetTextColor(hdc, rgb(colors.caption));
                 let caption = RECT {
                     left: 0,
                     top: px(78),
