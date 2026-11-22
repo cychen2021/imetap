@@ -13,7 +13,7 @@
 //! ```
 //!
 //! The mode is one mode for all applications. This module only builds and parses messages.
-//! The pipe I/O lives in `win::mingkuai`.
+//! The pipe I/O lives in `win::mingkuai`, and the socket I/O of macOS in `mac::mingkuai`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -43,6 +43,14 @@ pub fn pipe_name() -> String {
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_default();
     format!("mingkuai-{user}")
+}
+
+/// The socket file of the server of the current user on macOS. The server lives in the Application
+/// Support folder of the user, with the permissions of the user only.
+#[cfg(unix)]
+pub fn socket_path() -> Result<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+    Ok(std::path::PathBuf::from(home).join("Library/Application Support/Mingkuai/mingkuaid.sock"))
 }
 
 /// A complete request asking for the Chinese/English mode.

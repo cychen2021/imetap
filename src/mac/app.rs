@@ -7,7 +7,8 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::{CString, c_void};
 use std::ptr::{self, NonNull};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use block2::RcBlock;
@@ -27,10 +28,11 @@ use objc2_foundation::{
 };
 
 use super::ffi::{self, CFMachPortRef, CFRunLoopTimerRef, CGEventRef, CGEventTapProxy};
-use super::{Engine, autostart_enabled, claim_pid, open, set_autostart};
+use super::{Engine, autostart_enabled, claim_pid, mingkuai, open, set_autostart};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
 use crate::debug;
 use crate::fade::Fade;
+use crate::mingkuai as mingkuai_wire;
 use crate::reminder::{Reminder, now_ms};
 use crate::state::{Color, Ime, Rgb, Snapshot};
 use crate::tap::{Key, Tap, TapDetector};
@@ -49,7 +51,7 @@ const STATUS_WINDOW_LEVEL: isize = 25;
 /// Left inset of the menu header, lined up with the text of the other menu items.
 const HEADER_INSET: f64 = 14.0;
 
-const HOTKEY_IMES: [Ime; 3] = [Ime::Us, Ime::Shuangpin, Ime::Doubao];
+const HOTKEY_IMES: [Ime; 4] = [Ime::Us, Ime::Shuangpin, Ime::Doubao, Ime::Mingkuai];
 
 define_class!(
     /// Target of the status item's menu actions.
@@ -180,6 +182,9 @@ pub fn run(config: Config) -> Result<()> {
 
     start_event_tap();
     observe_changes();
+    if mingkuai_wire::enabled() {
+        spawn_mingkuai_watcher();
+    }
     probe(false, false);
     app.run();
     Ok(())
@@ -522,6 +527,53 @@ fn probe(show_if_changed: bool, force: bool) {
         debug::log(|| {
             format!("probe force={force} changed={changed} snapshot={snapshot:?} -> show={show}")
         });
+        if show {
+            show_hud(state, snapshot);
+        }
+    });
+}
+
+/// Watches the mode of Mingkuai, which changes inside Mingkuai (for example with Shift) without any
+/// system event. Each change wakes the main thread. When the server is not running, it tries again
+/// every few seconds.
+fn spawn_mingkuai_watcher() {
+    thread::spawn(|| {
+        loop {
+            // The first message is the mode at the time of the connection, not a change.
+            let mut first = true;
+            let result = mingkuai::watch(|chinese| {
+                debug::log(|| format!("mingkuai mode chinese={chinese} first={first}"));
+                if !std::mem::replace(&mut first, false) {
+                    // SAFETY: queues a plain function with no data on the main queue.
+                    unsafe {
+                        ffi::dispatch_async_f(
+                            &raw const ffi::_dispatch_main_q,
+                            ptr::null_mut(),
+                            mingkuai_mode_changed,
+                        )
+                    };
+                }
+            });
+            if let Err(e) = result {
+                debug::log(|| format!("mingkuai watch: {e:#}"));
+            }
+            thread::sleep(Duration::from_secs(5));
+        }
+    });
+}
+
+/// Runs on the main thread after the mode of Mingkuai changed. Shows the HUD if Mingkuai is the
+/// active input method.
+extern "C" fn mingkuai_mode_changed(_: *mut c_void) {
+    STATE.with(|s| {
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return;
+        };
+        let Some(state) = s.as_mut() else { return };
+        let snapshot = state.engine.snapshot();
+        let show = snapshot.ime == Ime::Mingkuai && state.last != Some(snapshot);
+        debug::log(|| format!("mingkuai mode changed snapshot={snapshot:?} -> show={show}"));
+        state.last = Some(snapshot);
         if show {
             show_hud(state, snapshot);
         }

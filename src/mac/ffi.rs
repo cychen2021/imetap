@@ -82,6 +82,13 @@ unsafe extern "C" {
         order: CFIndex,
     ) -> CFRunLoopSourceRef;
     pub fn CFRunLoopGetMain() -> CFRunLoopRef;
+    /// The main queue of libdispatch. It runs on the main thread, in the main run loop.
+    pub static _dispatch_main_q: c_void;
+    pub fn dispatch_async_f(
+        queue: *const c_void,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
     pub fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
     pub fn CFRunLoopAddTimer(rl: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef);
     pub fn CFRunLoopTimerCreate(

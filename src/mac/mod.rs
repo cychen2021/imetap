@@ -5,10 +5,12 @@
 //!
 //! There is no Chinese/English mode to read on macOS: the Doubao and Shuangpin input methods
 //! are separate input sources, and the double-tap swaps between the US source and the last-used
-//! Chinese one, exactly as `ime.lua` does.
+//! Chinese one, exactly as `ime.lua` does. Mingkuai is the exception: it has a mode in its server,
+//! so the double-tap switches that mode.
 
 pub mod app;
 mod ffi;
+pub(crate) mod mingkuai;
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, Write};
@@ -21,11 +23,14 @@ use anyhow::{Context, Result, bail};
 use crate::config::config_path;
 use crate::daemon_exe;
 use crate::debug;
+use crate::mingkuai as mingkuai_wire;
 use crate::state::{Ime, Snapshot};
 
 const SOURCE_US: &str = "com.apple.keylayout.US";
 const SOURCE_DOUBAO: &str = "com.bytedance.inputmethod.doubaoime.pinyin";
 const SOURCE_SHUANGPIN: &str = "com.apple.inputmethod.SCIM.Shuangpin";
+/// The input mode of Mingkuai. Known only when `mingkuai-integrate.enable` is set.
+const SOURCE_MINGKUAI: &str = "org.mingkuai.inputmethod.Mingkuai.Pinyin";
 const LAUNCH_AGENT: &str = "io.github.cychen2021.imetap";
 
 /// The input source identifier of an input method.
@@ -34,8 +39,8 @@ fn source_id(ime: Ime) -> Option<&'static str> {
         Ime::Us => Some(SOURCE_US),
         Ime::Doubao => Some(SOURCE_DOUBAO),
         Ime::Shuangpin => Some(SOURCE_SHUANGPIN),
-        // The macOS frontend of Mingkuai does not exist yet.
-        Ime::Pinyin | Ime::Mingkuai | Ime::Other => None,
+        Ime::Mingkuai => mingkuai_wire::enabled().then_some(SOURCE_MINGKUAI),
+        Ime::Pinyin | Ime::Other => None,
     }
 }
 
@@ -44,6 +49,7 @@ fn ime_of(source: &str) -> Ime {
         SOURCE_US => Ime::Us,
         SOURCE_DOUBAO => Ime::Doubao,
         SOURCE_SHUANGPIN => Ime::Shuangpin,
+        SOURCE_MINGKUAI if mingkuai_wire::enabled() => Ime::Mingkuai,
         _ => Ime::Other,
     }
 }
@@ -62,6 +68,8 @@ impl Engine {
             .unwrap_or(Ime::Other);
         let chinese = match ime {
             Ime::Us | Ime::Other => None,
+            // The mode of Mingkuai is in its server. Unknown while the server is down.
+            Ime::Mingkuai => mingkuai::is_chinese().ok(),
             _ => Some(true),
         };
         let snapshot = Snapshot::new(ime, chinese);
@@ -88,9 +96,11 @@ impl Engine {
         Ok(())
     }
 
-    /// Swaps between the US source and the last-used Chinese one.
+    /// Swaps between the US source and the last-used Chinese one. In Mingkuai it switches the mode
+    /// of Mingkuai instead and stays in the same input source.
     pub fn toggle(&self) -> Result<()> {
         match self.snapshot().ime {
+            Ime::Mingkuai => mingkuai::set_chinese(!mingkuai::is_chinese()?),
             Ime::Us | Ime::Other => self.set(last_chinese()),
             _ => self.set(Ime::Us),
         }
@@ -116,7 +126,7 @@ fn last_chinese() -> Ime {
         .ok()
         .and_then(|d| fs::read_to_string(d.join("last_chinese")).ok())
         .and_then(|s| Ime::parse(s.trim()))
-        .filter(|i| matches!(i, Ime::Doubao | Ime::Shuangpin))
+        .filter(|i| matches!(i, Ime::Doubao | Ime::Shuangpin | Ime::Mingkuai))
         .unwrap_or(Ime::Doubao)
 }
 
