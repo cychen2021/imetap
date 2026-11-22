@@ -12,6 +12,7 @@ use windows::core::HSTRING;
 
 use crate::mingkuai::{
     LENGTH_LEN, get_mode_request, parse_length, parse_mode_reply, pipe_name, set_mode_request,
+    watch_mode_request,
 };
 
 /// Closes the pipe handle on drop.
@@ -65,16 +66,35 @@ fn read_exact(pipe: &Pipe, buf: &mut [u8]) -> Result<()> {
     Ok(())
 }
 
-fn call(request: &[u8]) -> Result<Vec<u8>> {
-    let pipe = open()?;
+fn write(pipe: &Pipe, request: &[u8]) -> Result<()> {
     let mut written = 0u32;
     // SAFETY: the request and the count outlive the synchronous call.
     unsafe { WriteFile(pipe.0, Some(request), Some(&mut written), None)? };
+    Ok(())
+}
+
+fn read_reply(pipe: &Pipe) -> Result<Vec<u8>> {
     let mut prefix = [0u8; LENGTH_LEN];
-    read_exact(&pipe, &mut prefix)?;
+    read_exact(pipe, &mut prefix)?;
     let mut body = vec![0u8; parse_length(prefix)?];
-    read_exact(&pipe, &mut body)?;
+    read_exact(pipe, &mut body)?;
     Ok(body)
+}
+
+fn call(request: &[u8]) -> Result<Vec<u8>> {
+    let pipe = open()?;
+    write(&pipe, request)?;
+    read_reply(&pipe)
+}
+
+/// Calls `on_mode` with the mode now and after each change, until the connection fails. It blocks,
+/// so run it on its own thread.
+pub fn watch(mut on_mode: impl FnMut(bool)) -> Result<()> {
+    let pipe = open()?;
+    write(&pipe, &watch_mode_request())?;
+    loop {
+        on_mode(parse_mode_reply(&read_reply(&pipe)?)?);
+    }
 }
 
 /// Whether Mingkuai is in Chinese mode. The mode is the same in all applications.

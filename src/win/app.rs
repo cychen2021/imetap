@@ -48,7 +48,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, w};
 
 use super::hud::{Hud, draw_text};
-use super::{Engine, autostart, hotkey, init_com, uia};
+use super::{Engine, autostart, hotkey, init_com, mingkuai, uia};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
 use crate::debug;
 use crate::hold::{HeldKey, KeyHold};
@@ -72,6 +72,8 @@ const WM_REMIND: u32 = WM_APP + 5;
 
 /// Held-back keys may be replayed: the input method has applied the switch, or the hold is over.
 const WM_DRAIN: u32 = WM_APP + 8;
+/// From the Mingkuai watcher thread: the mode of Mingkuai changed.
+const WM_MINGKUAI: u32 = WM_APP + 9;
 
 const TIMER_DEBOUNCE: usize = 1;
 /// Ends the wait for a third Ctrl tap.
@@ -115,6 +117,9 @@ enum Job {
     Check,
     /// Read the state and always show it.
     Show,
+    /// The mode of Mingkuai changed inside Mingkuai. Read the state and show it if Mingkuai is the
+    /// active input method.
+    MingkuaiMode,
     /// Replay keys that were held back.
     Replay(Vec<HeldKey>),
 }
@@ -181,6 +186,9 @@ pub fn run(config: Config) -> Result<()> {
     let (jobs, rx) = channel();
     let outcomes = Arc::new(Mutex::new(VecDeque::new()));
     spawn_worker(rx, outcomes.clone(), hwnd.0 as isize);
+    if crate::mingkuai::enabled() {
+        spawn_mingkuai_watcher(hwnd.0 as isize);
+    }
 
     let tap = TapDetector::new(config.tap.gap_ms, config.tap.hold_ms, config.tap.triple_ms);
     TAP.with(|t| *t.borrow_mut() = tap);
@@ -237,6 +245,37 @@ fn send(job: Job) {
     });
 }
 
+/// Watches the mode of Mingkuai, which changes inside Mingkuai (for example with Shift) without
+/// any system event. Each change becomes `Job::MingkuaiMode`. When the server is not running, it
+/// tries again every few seconds.
+fn spawn_mingkuai_watcher(main: isize) {
+    thread::spawn(move || {
+        loop {
+            // The first message is the mode at the time of the connection, not a change.
+            let mut first = true;
+            let result = mingkuai::watch(|chinese| {
+                debug::log(|| format!("mingkuai mode chinese={chinese} first={first}"));
+                if !std::mem::replace(&mut first, false) {
+                    // SAFETY: posting to the main window handle, which outlives this thread.
+                    unsafe {
+                        PostMessageW(
+                            Some(HWND(main as *mut _)),
+                            WM_MINGKUAI,
+                            WPARAM(0),
+                            LPARAM(0),
+                        )
+                        .ok()
+                    };
+                }
+            });
+            if let Err(e) = result {
+                debug::log(|| format!("mingkuai watch: {e:#}"));
+            }
+            thread::sleep(Duration::from_secs(5));
+        }
+    });
+}
+
 fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main: isize) {
     thread::spawn(move || {
         init_com();
@@ -250,6 +289,7 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 Job::Set(ime) => format!("set {ime:?}"),
                 Job::Toggle => "toggle".to_string(),
                 Job::Show => "show".to_string(),
+                Job::MingkuaiMode => "mingkuai mode".to_string(),
                 Job::Probe => "probe".to_string(),
                 Job::Check => "check".to_string(),
                 Job::Replay(keys) => format!("replay {} keys", keys.len()),
@@ -260,11 +300,12 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 _ => None,
             };
             let check = matches!(job, Job::Check);
+            let mingkuai_mode = matches!(job, Job::MingkuaiMode);
             let (action, force) = match job {
                 Job::Set(ime) => (Some(engine.set(ime)), true),
                 Job::Toggle => (Some(engine.toggle()), true),
                 Job::Show => (None, true),
-                Job::Probe | Job::Check => (None, false),
+                Job::Probe | Job::Check | Job::MingkuaiMode => (None, false),
                 Job::Replay(keys) => {
                     if let Err(e) = hotkey::replay(&keys) {
                         eprintln!("imetap: {e:#}");
@@ -302,6 +343,7 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 thread::sleep(SETTLE);
             }
             let snapshot = engine.snapshot();
+            let force = force || (mingkuai_mode && snapshot.ime == Ime::Mingkuai);
             let (text_focus, focus) = if check {
                 engine.focus_in_text_field()
             } else {
@@ -1005,6 +1047,10 @@ unsafe extern "system" fn window_proc(
         }
         WM_OUTCOME => {
             on_outcomes(hwnd);
+            LRESULT(0)
+        }
+        WM_MINGKUAI => {
+            send(Job::MingkuaiMode);
             LRESULT(0)
         }
         WM_TRAY => {

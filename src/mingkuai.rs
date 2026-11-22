@@ -8,6 +8,7 @@
 //! message : length u32 little-endian | that many bytes of JSON
 //! request : "GetMode"                       -> {"Mode":{"chinese":true}}
 //! request : {"SetMode":{"chinese":false}}   -> {"Mode":{"chinese":false}}
+//! request : "WatchMode"                     -> {"Mode":{...}} now and after each change
 //! error   : {"Error":{"message":"..."}}
 //! ```
 //!
@@ -47,6 +48,12 @@ pub fn pipe_name() -> String {
 /// A complete request asking for the Chinese/English mode.
 pub fn get_mode_request() -> Vec<u8> {
     frame(br#""GetMode""#)
+}
+
+/// A complete request to get the mode now and after each change. The connection then takes no
+/// more requests.
+pub fn watch_mode_request() -> Vec<u8> {
+    frame(br#""WatchMode""#)
 }
 
 /// A complete request setting the Chinese/English mode.
@@ -95,6 +102,7 @@ mod tests {
     #[test]
     fn requests_are_framed_json() {
         assert_eq!(get_mode_request(), b"\x09\0\0\0\"GetMode\"");
+        assert_eq!(&watch_mode_request()[4..], br#""WatchMode""#);
         let set = set_mode_request(false);
         assert_eq!(&set[4..], br#"{"SetMode":{"chinese":false}}"#);
         assert_eq!(
