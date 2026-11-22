@@ -139,6 +139,8 @@ pub struct HudConfig {
     pub enabled: bool,
     /// Also show it when switching to a window whose input method or mode differs.
     pub on_window_switch: bool,
+    /// On a window switch, wait until focus is in a text field before showing it (Windows only).
+    pub wait_for_text_field: bool,
     /// How long it stays fully visible, in milliseconds.
     pub duration_ms: u64,
     /// 0.0 (invisible) to 1.0 (opaque).
@@ -150,6 +152,7 @@ impl Default for HudConfig {
         Self {
             enabled: true,
             on_window_switch: true,
+            wait_for_text_field: true,
             duration_ms: 900,
             opacity: 0.85,
         }

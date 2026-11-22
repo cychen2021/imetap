@@ -26,6 +26,9 @@ doubao = "Ctrl+Shift+D"
 enabled = true
 # Also show the HUD when switching to a window whose input method or mode differs.
 on_window_switch = true
+# With on_window_switch, wait until focus is in a text field before showing the HUD, so that merely
+# passing through windows does not flash it. Windows only; where the focus cannot be told, it shows.
+wait_for_text_field = true
 # How long it stays fully visible, in milliseconds.
 duration_ms = 900
 # 0.05 (almost invisible) to 1.0 (opaque).

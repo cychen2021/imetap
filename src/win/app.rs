@@ -47,11 +47,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, w};
 
 use super::hud::{Hud, draw_text};
-use super::{Engine, autostart, hotkey, init_com};
+use super::{Engine, autostart, debug_log, hotkey, init_com, uia};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
 use crate::hold::{HeldKey, KeyHold};
 use crate::reminder::{Reminder, now_ms};
-use crate::state::{Ime, Snapshot};
+use crate::state::{Ime, Snapshot, text_field_change};
 use crate::tap::{Key, Tap, TapDetector};
 
 const WM_TRAY: u32 = WM_APP + 1;
@@ -87,6 +87,7 @@ const SETTLE: Duration = Duration::from_millis(150);
 const APPLY: Duration = Duration::from_millis(50);
 
 const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
+const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 const EVENT_OBJECT_IME_CHANGE: u32 = 0x8029;
 const WINEVENT_OUTOFCONTEXT: u32 = 0;
 const LLKHF_EXTENDED: u32 = 0x01;
@@ -103,6 +104,8 @@ enum Job {
     Toggle,
     /// Just read the state.
     Probe,
+    /// Read the state and whether focus is in a text field.
+    Check,
     /// Read the state and always show it.
     Show,
     /// Replay keys that were held back.
@@ -113,6 +116,8 @@ struct Outcome {
     snapshot: Snapshot,
     /// Show the HUD even if the state did not change.
     force: bool,
+    /// Whether focus is in a text field; `true` when it was not asked for or cannot be told.
+    text_focus: bool,
     error: Option<String>,
 }
 
@@ -122,6 +127,8 @@ struct App {
     jobs: Sender<Job>,
     outcomes: Arc<Mutex<VecDeque<Outcome>>>,
     last: Option<Snapshot>,
+    /// The state when focus was last in a text field; only that counts as a change worth a HUD.
+    last_text: Option<Snapshot>,
     tray_icon: Option<HICON>,
 }
 
@@ -136,6 +143,9 @@ thread_local! {
     static HOLD_ENABLED: Cell<bool> = const { Cell::new(false) };
     /// `None` when the reminder is off. Touched by the hooks, so kept out of `APP` like `TAP`.
     static REMINDER: RefCell<Option<Reminder>> = const { RefCell::new(None) };
+    /// The last check found focus outside a text field, so focus events, key presses and clicks
+    /// trigger a new one. The hooks read it, so it is kept out of `APP`.
+    static WAIT_FOR_TEXT: Cell<bool> = const { Cell::new(false) };
     /// The next debounced read shows the HUD even if nothing changed.
     static REMIND_PENDING: Cell<bool> = const { Cell::new(false) };
     /// The id of the `TaskbarCreated` broadcast, sent when Explorer (re)starts its taskbar.
@@ -181,6 +191,7 @@ pub fn run(config: Config) -> Result<()> {
             jobs,
             outcomes,
             last: None,
+            last_text: None,
             tray_icon: None,
         })
     });
@@ -225,11 +236,12 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
         };
         for job in rx {
             let toggled = matches!(job, Job::Toggle);
+            let check = matches!(job, Job::Check);
             let (action, force) = match job {
                 Job::Set(ime) => (Some(engine.set(ime)), true),
                 Job::Toggle => (Some(engine.toggle()), true),
                 Job::Show => (None, true),
-                Job::Probe => (None, false),
+                Job::Probe | Job::Check => (None, false),
                 Job::Replay(keys) => {
                     if let Err(e) = hotkey::replay(&keys) {
                         eprintln!("imetap: {e:#}");
@@ -248,9 +260,24 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 // Let the input method apply the change before reading it back.
                 thread::sleep(SETTLE);
             }
+            let snapshot = engine.snapshot();
+            let (text_focus, focus) = if check {
+                engine.focus_in_text_field()
+            } else {
+                (true, None)
+            };
+            if check {
+                debug_log(|| {
+                    format!(
+                        "check window={} snapshot={snapshot:?} text_focus={text_focus} focus={focus:?}",
+                        uia::foreground_class()
+                    )
+                });
+            }
             let outcome = Outcome {
-                snapshot: engine.snapshot(),
+                snapshot,
                 force,
+                text_focus,
                 error,
             };
             outcomes.lock().unwrap().push_back(outcome);
@@ -328,7 +355,11 @@ impl Hooks {
                     SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(instance), 0).ok();
                 mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(instance), 0).ok();
             }
-            let events = [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_IME_CHANGE]
+            let mut watched = vec![EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_IME_CHANGE];
+            if config.hud.wait_for_text_field {
+                watched.push(EVENT_OBJECT_FOCUS);
+            }
+            let events = watched
                 .into_iter()
                 .map(|event| {
                     SetWinEventHook(
@@ -438,6 +469,12 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         let injected = info.flags.0 & LLKHF_INJECTED != 0;
         if !injected {
             note_activity();
+            // Typing is a sign of a text field, for apps whose focus changes are not reported.
+            if WAIT_FOR_TEXT.with(Cell::get)
+                && matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN)
+            {
+                post_main(WM_PASSIVE);
+            }
         }
         if !injected && TAP_ENABLED.with(Cell::get) {
             // `time` is the event's own timestamp in ms, so a delayed hook call does not skew taps.
@@ -483,6 +520,9 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             wparam.0 as u32,
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
         ) {
+            if WAIT_FOR_TEXT.with(Cell::get) {
+                post_main(WM_PASSIVE);
+            }
             post_tap(TAP.with(|t| t.borrow_mut().pointer()));
         }
     }
@@ -499,6 +539,13 @@ unsafe extern "system" fn win_event_proc(
     _: u32,
     _: u32,
 ) {
+    if event == EVENT_OBJECT_FOCUS {
+        // Only interesting while the HUD waits for a text field; focus moves all the time.
+        if WAIT_FOR_TEXT.with(Cell::get) {
+            post_main(WM_PASSIVE);
+        }
+        return;
+    }
     if event == EVENT_SYSTEM_FOREGROUND {
         let due = REMINDER.with(|r| {
             r.borrow_mut()
@@ -764,7 +811,25 @@ fn on_outcomes(hwnd: HWND) {
             let changed = app.last != Some(snapshot);
             let first = app.last.is_none();
             app.last = Some(snapshot);
-            let wanted = outcome.force || (changed && !first && app.config.hud.on_window_switch);
+            let hud = &app.config.hud;
+            let wait = hud.wait_for_text_field && hud.on_window_switch;
+            let wanted = if outcome.force {
+                app.last_text = Some(snapshot);
+                WAIT_FOR_TEXT.with(|w| w.set(false));
+                true
+            } else if wait {
+                // Only a text field counts, and only against the last text field.
+                WAIT_FOR_TEXT.with(|w| w.set(!outcome.text_focus));
+                text_field_change(&mut app.last_text, snapshot, outcome.text_focus)
+            } else {
+                changed && !first && hud.on_window_switch
+            };
+            debug_log(|| {
+                format!(
+                    "outcome force={} text_focus={} last_text={:?} -> show={wanted}",
+                    outcome.force, outcome.text_focus, app.last_text
+                )
+            });
             if wanted && app.config.hud.enabled {
                 app.hud.show(snapshot, &app.config.hud);
                 REMINDER.with(|r| {
@@ -849,7 +914,16 @@ unsafe extern "system" fn window_proc(
             // A pending reminder shows the HUD whatever the state; it waits for the debounce so that
             // it reads the window that has just come to the front.
             let remind = REMIND_PENDING.with(|p| p.replace(false));
-            send(if remind { Job::Show } else { Job::Probe });
+            let check = APP.with(|a| {
+                a.borrow().as_ref().is_some_and(|app| {
+                    app.config.hud.wait_for_text_field && app.config.hud.on_window_switch
+                })
+            });
+            send(match (remind, check) {
+                (true, _) => Job::Show,
+                (false, true) => Job::Check,
+                (false, false) => Job::Probe,
+            });
             LRESULT(0)
         }
         WM_OUTCOME => {

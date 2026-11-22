@@ -12,10 +12,37 @@ pub mod icons;
 pub mod ime;
 pub mod uia;
 
+use std::thread;
+use std::time::Duration;
+
 use anyhow::Result;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 
 use crate::state::{Ime, Snapshot};
+
+/// Appends a line to `%TEMP%\imetap-debug.log` when the environment variable `IMETAP_DEBUG` is set.
+/// The message is only built then.
+pub fn debug_log(message: impl FnOnce() -> String) {
+    use std::io::Write;
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var_os("IMETAP_DEBUG").is_some()) {
+        return;
+    }
+    let path = std::env::temp_dir().join("imetap-debug.log");
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64());
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{secs:.3} {}", message());
+    }
+}
 
 /// Initialises COM for the calling thread. Every thread that uses the types below needs this.
 pub fn init_com() {
@@ -46,9 +73,47 @@ impl Engine {
         Snapshot::new(ime, chinese)
     }
 
+    /// Whether keyboard focus is in a text field (`true` when that cannot be told), and what UI
+    /// Automation reported for it.
+    ///
+    /// A Chromium window (Chrome, Edge, any Electron app) that shows only a bare window has its
+    /// accessibility tree not ready yet, since Chromium builds it on the first request. Ask again a
+    /// few times; if it is still not there, it does not count as a text field, and the next focus
+    /// change, key press or click checks again. Other bare windows are custom-drawn apps, which
+    /// tell nothing and count as text fields.
+    pub fn focus_in_text_field(&self) -> (bool, Option<uia::FocusInfo>) {
+        let read = || self.tray.as_ref().and_then(uia::TrayReader::focus_info);
+        let bare = |info: &Option<uia::FocusInfo>| info.is_some_and(|i| i.is_bare_window());
+        let chromium = uia::foreground_is_chromium();
+        let mut info = read();
+        if chromium {
+            for _ in 0..5 {
+                if !bare(&info) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+                info = read();
+            }
+        }
+        let text = if chromium && bare(&info) {
+            false
+        } else {
+            info.is_none_or(uia::is_text_field)
+        };
+        (text, info)
+    }
+
     /// Raw facts behind `snapshot`, for diagnosing detection problems.
     pub fn describe(&self) -> String {
-        format!("hkl={:#x} tip={:?}", ime::layout(), ime::active_tip())
+        let focus = self.tray.as_ref().and_then(uia::TrayReader::focus_info);
+        format!(
+            "hkl={:#x} tip={:?}
+         focus={:?} text-field={}",
+            ime::layout(),
+            ime::active_tip(),
+            focus,
+            self.focus_in_text_field().0
+        )
     }
 
     /// Switches to another input method.

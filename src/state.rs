@@ -138,6 +138,24 @@ impl fmt::Display for Snapshot {
     }
 }
 
+/// Decides whether a window switch (or any unprompted change) deserves a HUD when only text fields
+/// count. `baseline` is the state the last time focus was in a text field. Outside a text field
+/// nothing shows and the baseline stays, so leaving a Chinese text box for a window without one and
+/// coming back is no change. Inside one, the HUD is due when the state differs from the baseline,
+/// which is then updated.
+pub fn text_field_change(
+    baseline: &mut Option<Snapshot>,
+    now: Snapshot,
+    in_text_field: bool,
+) -> bool {
+    if !in_text_field {
+        return false;
+    }
+    let due = baseline.is_some_and(|before| before != now);
+    *baseline = Some(now);
+    due
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +209,22 @@ mod tests {
         assert_eq!(Ime::parse("US"), Some(Ime::Us));
         assert_eq!(Ime::parse("Doubao"), Some(Ime::Doubao));
         assert_eq!(Ime::parse("nope"), None);
+    }
+
+    #[test]
+    fn only_text_fields_count_for_window_switch_huds() {
+        let zh = Snapshot::new(Ime::Doubao, Some(true));
+        let en = Snapshot::new(Ime::Us, None);
+        let mut baseline = None;
+        // The first reading only sets the baseline.
+        assert!(!text_field_change(&mut baseline, zh, true));
+        // A Chinese text box, then a window without a text field, then the Chinese text box again.
+        assert!(!text_field_change(&mut baseline, en, false));
+        assert!(!text_field_change(&mut baseline, zh, true));
+        // Another text field with a different state does show.
+        assert!(text_field_change(&mut baseline, en, true));
+        // And back.
+        assert!(text_field_change(&mut baseline, zh, true));
+        assert!(!text_field_change(&mut baseline, zh, true));
     }
 }
