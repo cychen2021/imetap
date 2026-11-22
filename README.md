@@ -55,7 +55,7 @@ opacity = 0.85
 enabled = false
 mode = "resume"  # or "resume-and-switch"
 idle_secs = 300  # no key, mouse or focus-window activity for this long counts as idle
-dwell_secs = 600 # resume-and-switch: leaving a window used this long without a HUD shows it
+dwell_secs = 300 # resume-and-switch: leaving a window used this long without a HUD shows it
 ```
 
 On macOS the reminder sees changes of the frontmost application, not of windows within one application.

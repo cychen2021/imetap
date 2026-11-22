@@ -167,7 +167,7 @@ impl Default for ReminderConfig {
             enabled: false,
             mode: ReminderMode::Resume,
             idle_secs: 300,
-            dwell_secs: 600,
+            dwell_secs: 300,
         }
     }
 }

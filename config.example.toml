@@ -35,4 +35,4 @@ mode = "resume"
 # How long without activity counts as idle, in seconds.
 idle_secs = 300
 # How long a window must have been used, in seconds (resume-and-switch only).
-dwell_secs = 600
+dwell_secs = 300
