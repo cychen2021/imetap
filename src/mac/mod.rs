@@ -62,7 +62,13 @@ impl Engine {
             Ime::Us | Ime::Other => None,
             _ => Some(true),
         };
-        Snapshot::new(ime, chinese)
+        let snapshot = Snapshot::new(ime, chinese);
+        match ime {
+            Ime::Other => {
+                ffi::current_source_name().map_or(snapshot, |name| snapshot.with_other_name(&name))
+            }
+            _ => snapshot,
+        }
     }
 
     pub fn describe(&self) -> String {

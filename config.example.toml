@@ -42,6 +42,8 @@ english = "blue"
 [hud.ime_colors]
 # The stripe on the left edge of the HUD, one colour per input method. An input method without a
 # Chinese/English mode ("other", i.e. one imetap does not know) also gets it as the background.
+# An input method imetap does not know but the system names (Hiragana, Dvorak, ...) gets a label and
+# a colour derived from that name instead, so "other" only applies when there is no name.
 us = "grey"
 pinyin = "green"
 doubao = "orange"

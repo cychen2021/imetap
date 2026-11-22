@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::reminder::ReminderMode;
-use crate::state::{Color, HudColors, HudStyle, Ime, Snapshot};
+use crate::state::{Color, HudColors, HudStyle, Ime, Snapshot, color_for_name, label_for_name};
 use crate::tap::TapDetector;
 
 /// Modifier keys of a [`Shortcut`].
@@ -224,12 +224,14 @@ impl HudConfig {
     /// What the HUD draws for a state. The background follows the mode; an input method without a
     /// mode takes its own colour for the background.
     pub fn style(&self, snapshot: Snapshot) -> HudStyle {
-        let (stripe, label) = match snapshot.ime {
-            Ime::Us => (self.ime_colors.us, &self.ime_labels.us),
-            Ime::Pinyin => (self.ime_colors.pinyin, &self.ime_labels.pinyin),
-            Ime::Doubao => (self.ime_colors.doubao, &self.ime_labels.doubao),
-            Ime::Shuangpin => (self.ime_colors.shuangpin, &self.ime_labels.shuangpin),
-            Ime::Other => (self.ime_colors.other, &self.ime_labels.other),
+        let (stripe, label) = match (snapshot.ime, snapshot.other_name()) {
+            // An unknown input method that the system named: label and colour come from the name.
+            (Ime::Other, Some(name)) => (color_for_name(&name), label_for_name(&name)),
+            (Ime::Us, _) => (self.ime_colors.us, self.ime_labels.us.clone()),
+            (Ime::Pinyin, _) => (self.ime_colors.pinyin, self.ime_labels.pinyin.clone()),
+            (Ime::Doubao, _) => (self.ime_colors.doubao, self.ime_labels.doubao.clone()),
+            (Ime::Shuangpin, _) => (self.ime_colors.shuangpin, self.ime_labels.shuangpin.clone()),
+            (Ime::Other, None) => (self.ime_colors.other, self.ime_labels.other.clone()),
         };
         let background = match snapshot.glyph() {
             "中" => self.colors.chinese,
@@ -238,7 +240,7 @@ impl HudConfig {
         };
         HudStyle {
             colors: HudColors::new(background, stripe),
-            label: label.clone(),
+            label,
         }
     }
 }
@@ -447,6 +449,11 @@ mod tests {
         let us = hud.style(Snapshot::new(Ime::Us, None));
         assert_eq!(us.colors, HudColors::new(Color::Blue, Color::Grey));
         assert_eq!(us.label, "US");
+        // An unknown input method that the system named gets a label and colour from its name.
+        let named = hud.style(Snapshot::new(Ime::Other, None).with_other_name("Hiragana"));
+        assert_eq!(named.label, "HI");
+        let color = color_for_name("Hiragana");
+        assert_eq!(named.colors, HudColors::new(color, color));
         // Without a mode, the input method's own colour is the background.
         let other = hud.style(Snapshot::new(Ime::Other, None));
         assert_eq!(other.colors, HudColors::new(Color::Purple, Color::Purple));

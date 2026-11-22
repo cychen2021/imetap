@@ -2,16 +2,20 @@
 
 use anyhow::{Result, bail};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::Globalization::{
+    GetLocaleInfoEx, LCIDToLocaleName, LOCALE_SNATIVELANGUAGENAME,
+};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIP_KEYBOARD, ITfInputProcessorProfileMgr,
-    TF_INPUTPROCESSORPROFILE, TF_IPPMF_FORSESSION, TF_PROFILETYPE_INPUTPROCESSOR,
+    ITfInputProcessorProfiles, TF_INPUTPROCESSORPROFILE, TF_IPPMF_FORSESSION,
+    TF_PROFILETYPE_INPUTPROCESSOR,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, PostMessageW, WM_INPUTLANGCHANGEREQUEST,
 };
-use windows::core::GUID;
+use windows::core::{GUID, PCWSTR};
 
 use crate::state::Ime;
 
@@ -106,4 +110,64 @@ pub fn active_tip() -> Option<GUID> {
             .ok()?
     };
     Some(profile.clsid)
+}
+
+/// A name for the active input method, for those imetap does not know: the description a text
+/// input processor registers ("Microsoft Pinyin"), or, for a plain keyboard layout, the name of its
+/// language in that language ("Deutsch").
+pub fn other_name() -> Option<String> {
+    let mgr = profile_mgr().ok()?;
+    let mut profile = TF_INPUTPROCESSORPROFILE::default();
+    // SAFETY: `profile` is a valid out parameter for the duration of the call.
+    unsafe {
+        mgr.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &mut profile)
+            .ok()?
+    };
+    if profile.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR {
+        // SAFETY: plain COM activation, and a call whose GUID pointers outlive it.
+        let description = unsafe {
+            let profiles: ITfInputProcessorProfiles =
+                CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
+                    .ok()?;
+            profiles
+                .GetLanguageProfileDescription(&profile.clsid, profile.langid, &profile.guidProfile)
+                .ok()?
+        };
+        let description = description.to_string();
+        if !description.trim().is_empty() {
+            return Some(description);
+        }
+    }
+    language_name(profile.langid)
+}
+
+/// The name of a language in that language, from its language id.
+fn language_name(langid: u16) -> Option<String> {
+    let mut locale = [0u16; 85];
+    let mut name = [0u16; 128];
+    // SAFETY: both buffers are writable for the lengths passed, and `locale` holds a NUL-terminated
+    // name when the first call succeeds.
+    let len = unsafe {
+        if LCIDToLocaleName(langid as u32, Some(&mut locale), 0) == 0 {
+            return None;
+        }
+        GetLocaleInfoEx(
+            PCWSTR(locale.as_ptr()),
+            LOCALE_SNATIVELANGUAGENAME,
+            Some(&mut name),
+        )
+    };
+    (len > 1).then(|| String::from_utf16_lossy(&name[..len as usize - 1]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_language_is_named_in_itself() {
+        assert_eq!(language_name(0x0407).as_deref(), Some("Deutsch"));
+        assert_eq!(language_name(0x0411).as_deref(), Some("日本語"));
+        assert_eq!(language_name(0xFFFF), None);
+    }
 }

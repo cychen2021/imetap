@@ -32,6 +32,7 @@ const kCFStringEncodingUTF8: u32 = 0x0800_0100;
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     pub static kTISPropertyInputSourceID: CFStringRef;
+    static kTISPropertyLocalizedName: CFStringRef;
     pub static kCFRunLoopCommonModes: CFStringRef;
     pub static kAXTrustedCheckOptionPrompt: CFStringRef;
     pub static kCFBooleanTrue: CFTypeRef;
@@ -156,6 +157,20 @@ fn string_of(s: CFStringRef) -> Option<String> {
 fn id_of(source: CFTypeRef) -> Option<String> {
     // SAFETY: `source` is a live TISInputSource; the property is owned by it ("get" rule).
     string_of(unsafe { TISGetInputSourceProperty(source, kTISPropertyInputSourceID) })
+}
+
+/// The localized name of the current keyboard input source, as the input menu shows it.
+pub fn current_source_name() -> Option<String> {
+    // SAFETY: "copy" rule: the source is released after reading; the name belongs to it ("get" rule).
+    unsafe {
+        let source = TISCopyCurrentKeyboardInputSource();
+        if source.is_null() {
+            return None;
+        }
+        let name = string_of(TISGetInputSourceProperty(source, kTISPropertyLocalizedName));
+        CFRelease(source);
+        name
+    }
 }
 
 /// The identifier of the current keyboard input source.

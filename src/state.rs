@@ -2,6 +2,8 @@
 //! in Chinese or English mode.
 
 use std::fmt;
+use std::num::NonZeroU32;
+use std::sync::Mutex;
 
 use serde::Deserialize;
 
@@ -139,6 +141,43 @@ pub struct HudStyle {
     pub label: String,
 }
 
+/// The colours an unknown input method is given by its name, none of which means a mode.
+const NAMED_COLORS: [Color; 6] = [
+    Color::Purple,
+    Color::Pink,
+    Color::Brown,
+    Color::Teal,
+    Color::Green,
+    Color::Orange,
+];
+
+/// A stable colour for an input method name.
+pub fn color_for_name(name: &str) -> Color {
+    // FNV-1a, so the colour does not change between runs.
+    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
+    });
+    NAMED_COLORS[(hash % NAMED_COLORS.len() as u64) as usize]
+}
+
+/// A short label for an input method name: the first character when it is not ASCII ("简体拼音"
+/// gives "简"), otherwise the first two letters or digits in upper case ("Hiragana" gives "HI").
+pub fn label_for_name(name: &str) -> String {
+    let name = name.trim();
+    match name.chars().next() {
+        Some(first) if !first.is_ascii() => first.to_string(),
+        _ => {
+            let label: String = name
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(2)
+                .map(|c| c.to_ascii_uppercase())
+                .collect();
+            if label.is_empty() { "?".into() } else { label }
+        }
+    }
+}
+
 /// The observable state of the foreground window's input method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Snapshot {
@@ -146,11 +185,41 @@ pub struct Snapshot {
     /// `Some(true)` for Chinese mode, `Some(false)` for English mode, `None` when it cannot be
     /// told (the US layout has no such mode, and some input methods do not expose it).
     pub chinese: Option<bool>,
+    /// The name of an input method imetap does not know (`Ime::Other`), when the system gave one.
+    other: Option<NonZeroU32>,
 }
+
+/// The names of the unknown input methods seen so far, so that [`Snapshot`] can stay `Copy`.
+static OTHER_NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 impl Snapshot {
     pub fn new(ime: Ime, chinese: Option<bool>) -> Self {
-        Self { ime, chinese }
+        Self {
+            ime,
+            chinese,
+            other: None,
+        }
+    }
+
+    /// Records the name the system gives to an input method imetap does not know; the HUD derives
+    /// a label and a colour from it. Two different names make two different snapshots.
+    pub fn with_other_name(mut self, name: &str) -> Self {
+        let name = name.trim();
+        if !name.is_empty() {
+            let mut names = OTHER_NAMES.lock().unwrap();
+            let index = names.iter().position(|n| n == name).unwrap_or_else(|| {
+                names.push(name.to_string());
+                names.len() - 1
+            });
+            self.other = NonZeroU32::new(index as u32 + 1);
+        }
+        self
+    }
+
+    /// The name recorded with [`with_other_name`](Self::with_other_name).
+    pub fn other_name(&self) -> Option<String> {
+        let index = self.other?.get() as usize - 1;
+        OTHER_NAMES.lock().unwrap().get(index).cloned()
     }
 
     /// The big text on the HUD and in the tray icon.
@@ -167,7 +236,10 @@ impl Snapshot {
     /// The input method and mode in words, for `status` output.
     pub fn caption(&self) -> String {
         match (self.ime, self.chinese) {
-            (Ime::Us | Ime::Other, _) => self.ime.display_name().to_string(),
+            (Ime::Other, _) => self
+                .other_name()
+                .unwrap_or_else(|| self.ime.display_name().to_string()),
+            (Ime::Us, _) => self.ime.display_name().to_string(),
             (ime, Some(true)) => format!("{} · 中文", ime.display_name()),
             (ime, Some(false)) => format!("{} · English", ime.display_name()),
             (ime, None) => ime.display_name().to_string(),
@@ -245,5 +317,32 @@ mod tests {
         // And back.
         assert!(text_field_change(&mut baseline, zh, true));
         assert!(!text_field_change(&mut baseline, zh, true));
+    }
+
+    #[test]
+    fn names_make_labels_and_stable_colours() {
+        assert_eq!(label_for_name("简体拼音"), "简");
+        assert_eq!(label_for_name("Hiragana"), "HI");
+        assert_eq!(label_for_name("  Dvorak "), "DV");
+        assert_eq!(label_for_name("A"), "A");
+        assert_eq!(label_for_name("-"), "?");
+        assert_eq!(color_for_name("Hiragana"), color_for_name("Hiragana"));
+        assert!(!matches!(
+            color_for_name("anything"),
+            Color::Red | Color::Blue
+        ));
+    }
+
+    #[test]
+    fn different_unknown_input_methods_are_different_snapshots() {
+        let a = Snapshot::new(Ime::Other, None).with_other_name("Hiragana");
+        let b = Snapshot::new(Ime::Other, None).with_other_name("Dvorak");
+        let c = Snapshot::new(Ime::Other, None).with_other_name("Hiragana");
+        assert_ne!(a, b);
+        assert_eq!(a, c);
+        assert_ne!(a, Snapshot::new(Ime::Other, None));
+        assert_eq!(a.other_name().as_deref(), Some("Hiragana"));
+        assert_eq!(a.caption(), "Hiragana");
+        assert_eq!(Snapshot::new(Ime::Other, None).caption(), "Other");
     }
 }

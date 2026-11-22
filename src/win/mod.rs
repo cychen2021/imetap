@@ -69,7 +69,13 @@ impl Engine {
             Ime::Pinyin => self.tray.as_ref().and_then(|t| t.chinese_mode()),
             _ => None,
         };
-        Snapshot::new(ime, chinese)
+        let snapshot = Snapshot::new(ime, chinese);
+        match ime {
+            Ime::Other => {
+                ime::other_name().map_or(snapshot, |name| snapshot.with_other_name(&name))
+            }
+            _ => snapshot,
+        }
     }
 
     /// Whether keyboard focus is in a text field (`true` when that cannot be told), and what UI
@@ -106,10 +112,11 @@ impl Engine {
     pub fn describe(&self) -> String {
         let focus = self.tray.as_ref().and_then(uia::TrayReader::focus_info);
         format!(
-            "hkl={:#x} tip={:?}
+            "hkl={:#x} tip={:?} name={:?}
          focus={:?} text-field={}",
             ime::layout(),
             ime::active_tip(),
+            ime::other_name(),
             focus,
             self.focus_in_text_field().0
         )
