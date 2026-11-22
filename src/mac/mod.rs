@@ -30,7 +30,9 @@ const SOURCE_US: &str = "com.apple.keylayout.US";
 const SOURCE_DOUBAO: &str = "com.bytedance.inputmethod.doubaoime.pinyin";
 const SOURCE_SHUANGPIN: &str = "com.apple.inputmethod.SCIM.Shuangpin";
 /// The input mode of Mingkuai. Known only when `mingkuai-integrate.enable` is set.
+/// Mingkuai has one input mode for each of its modes, so the menu bar shows the mode.
 const SOURCE_MINGKUAI: &str = "org.mingkuai.inputmethod.Mingkuai.Pinyin";
+const SOURCE_MINGKUAI_ENGLISH: &str = "org.mingkuai.inputmethod.Mingkuai.English";
 const LAUNCH_AGENT: &str = "io.github.cychen2021.imetap";
 
 /// The input source identifier of an input method.
@@ -39,7 +41,11 @@ fn source_id(ime: Ime) -> Option<&'static str> {
         Ime::Us => Some(SOURCE_US),
         Ime::Doubao => Some(SOURCE_DOUBAO),
         Ime::Shuangpin => Some(SOURCE_SHUANGPIN),
-        Ime::Mingkuai => mingkuai_wire::enabled().then_some(SOURCE_MINGKUAI),
+        // The input mode of the current mode, so that the switch keeps the mode.
+        Ime::Mingkuai => mingkuai_wire::enabled().then(|| match mingkuai::is_chinese() {
+            Ok(false) => SOURCE_MINGKUAI_ENGLISH,
+            _ => SOURCE_MINGKUAI,
+        }),
         Ime::Pinyin | Ime::Other => None,
     }
 }
@@ -49,7 +55,7 @@ fn ime_of(source: &str) -> Ime {
         SOURCE_US => Ime::Us,
         SOURCE_DOUBAO => Ime::Doubao,
         SOURCE_SHUANGPIN => Ime::Shuangpin,
-        SOURCE_MINGKUAI if mingkuai_wire::enabled() => Ime::Mingkuai,
+        SOURCE_MINGKUAI | SOURCE_MINGKUAI_ENGLISH if mingkuai_wire::enabled() => Ime::Mingkuai,
         _ => Ime::Other,
     }
 }
