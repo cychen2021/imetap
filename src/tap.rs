@@ -6,7 +6,7 @@
 //! A double tap toggles Chinese/English and a triple tap shows the HUD. When triple taps are on,
 //! the second tap cannot fire at once, since a third may follow: it reports [`Tap::Pending`], the
 //! caller arms a timer of [`TapDetector::triple_ms`] and calls [`TapDetector::expire`] when it
-//! fires. A third tap in time gives [`Tap::Triple`]; anything else in between (another key, a
+//! fires. A third tap in time gives [`Tap::Triple`]. Anything else in between (another key, a
 //! click) resolves the double tap at once.
 
 /// The only distinction the detector needs: Ctrl (left or right) or anything else.
@@ -21,7 +21,7 @@ pub enum Key {
 pub enum Tap {
     /// Nothing yet.
     None,
-    /// A double tap that waits for a possible third tap; arm the timer.
+    /// A double tap that waits for a possible third tap. Arm the timer.
     Pending,
     /// A double tap.
     Double,
@@ -37,7 +37,7 @@ pub struct TapDetector {
     gap_ms: u64,
     /// Longest time Ctrl may be held for the press to still count as a tap.
     hold_ms: u64,
-    /// Longest time between the release of the second tap and the release of the third; 0 turns
+    /// Longest time between the release of the second tap and the release of the third. 0 turns
     /// triple taps off.
     triple_ms: u64,
     down_at: Option<u64>,
@@ -53,7 +53,7 @@ impl TapDetector {
     pub const DEFAULT_HOLD_MS: u64 = 300;
     pub const DEFAULT_TRIPLE_MS: u64 = 300;
 
-    /// A detector; `triple_ms` of 0 turns triple taps off, so double taps fire at once.
+    /// A detector. `triple_ms` of 0 turns triple taps off, so double taps fire at once.
     pub fn new(gap_ms: u64, hold_ms: u64, triple_ms: u64) -> Self {
         Self {
             gap_ms,

@@ -36,7 +36,7 @@ impl KeyHold {
         self.active
     }
 
-    /// Offers an event: when active it is queued and the caller must swallow it (`true`); otherwise
+    /// Offers an event: when active it is queued and the caller must swallow it (`true`). Otherwise
     /// the caller lets it through.
     pub fn capture(&mut self, key: HeldKey) -> bool {
         if self.active {

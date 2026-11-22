@@ -39,7 +39,7 @@ fn profile_mgr() -> Result<ITfInputProcessorProfileMgr> {
     Ok(unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)? })
 }
 
-/// Switches the input method. The US layout is requested from the foreground window; the Chinese
+/// Switches the input method. The US layout is requested from the foreground window. The Chinese
 /// IMEs are activated for the whole session.
 pub fn activate(ime: Ime) -> Result<()> {
     let (clsid, profile) = match ime {

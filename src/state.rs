@@ -201,7 +201,7 @@ impl Snapshot {
         }
     }
 
-    /// Records the name the system gives to an input method imetap does not know; the HUD derives
+    /// Records the name the system gives to an input method imetap does not know. The HUD derives
     /// a label and a colour from it. Two different names make two different snapshots.
     pub fn with_other_name(mut self, name: &str) -> Self {
         let name = name.trim();

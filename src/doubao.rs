@@ -4,7 +4,7 @@
 //! Doubao keeps its Chinese/English state and its status-bar icon in a server process, and exposes
 //! the operations as RPC over the named pipe `\\.\pipe\ObricIme\oime-server`. Setting the state
 //! through the pipe is the only way to change it from outside: the server's own keyboard hook
-//! ignores injected keys. This module only builds and parses messages; the pipe I/O lives in
+//! ignores injected keys. This module only builds and parses messages. The pipe I/O lives in
 //! `win::doubao`.
 //!
 //! ```text

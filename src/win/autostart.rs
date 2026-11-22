@@ -3,7 +3,7 @@
 //! Windows holds back `Run` entries (and the Startup folder) until the desktop has settled, which on
 //! a busy login can take minutes. A scheduled logon task starts right at logon, but creating one
 //! needs an elevated terminal. So enabling tries the task first and always also sets the `Run`
-//! value as the fallback; a second instance exits immediately thanks to the single-instance lock.
+//! value as the fallback. A second instance exits immediately thanks to the single-instance lock.
 
 use std::env;
 use std::os::windows::process::CommandExt;
@@ -36,7 +36,7 @@ pub fn task_exists() -> bool {
     schtasks(&["/Query", "/TN", TASK])
 }
 
-/// Creates the logon task for the current user; fails without elevation.
+/// Creates the logon task for the current user. Fails without elevation.
 fn create_task() -> bool {
     let (Ok(exe), Ok(user), Ok(domain)) =
         (daemon_exe(), env::var("USERNAME"), env::var("USERDOMAIN"))
@@ -57,7 +57,7 @@ pub fn is_enabled() -> bool {
 }
 
 fn run_entry_exists() -> bool {
-    // SAFETY: a size-only query; no output buffer is passed.
+    // SAFETY: a size-only query. No output buffer is passed.
     unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,
@@ -73,7 +73,7 @@ fn run_entry_exists() -> bool {
 }
 
 /// Enables or disables starting at login. When enabling, returns whether the fast logon task
-/// could be created, which needs an elevated terminal; the Run entry is set either way.
+/// could be created, which needs an elevated terminal. The Run entry is set either way.
 pub fn set(enabled: bool) -> Result<bool> {
     if enabled {
         let task = create_task();

@@ -27,7 +27,7 @@ impl Fade {
         self.in_ms + self.hold_ms + self.out_ms
     }
 
-    /// Brightness from 0.0 to 1.0 after `elapsed_ms`; 0.0 once it is over.
+    /// Brightness from 0.0 to 1.0 after `elapsed_ms`. 0.0 once it is over.
     pub fn level(&self, elapsed_ms: u64) -> f32 {
         let after_in = elapsed_ms.saturating_sub(self.in_ms);
         if elapsed_ms < self.in_ms {

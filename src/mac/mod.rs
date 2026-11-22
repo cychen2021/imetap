@@ -1,7 +1,7 @@
 //! macOS implementation, a port of the Hammerspoon script `ime.lua`.
 //!
 //! **Untested.** It is written against the documented Carbon, Quartz and AppKit APIs and is only
-//! checked to compile (`cargo check --target aarch64-apple-darwin`); it has never been run on a Mac.
+//! checked to compile (`cargo check --target aarch64-apple-darwin`). It has never been run on a Mac.
 //!
 //! There is no Chinese/English mode to read on macOS: the Doubao and Shuangpin input methods
 //! are separate input sources, and the double-tap swaps between the US source and the last-used
@@ -149,10 +149,10 @@ fn open_lock() -> Result<File> {
         .with_context(|| format!("cannot open {}", path.display()))
 }
 
-/// Held for the life of the resident process; the OS releases the lock when it exits.
+/// Held for the life of the resident process. The OS releases the lock when it exits.
 static INSTANCE: OnceLock<File> = OnceLock::new();
 
-/// Takes the single-instance lock and records this process's PID; fails if another instance
+/// Takes the single-instance lock and records this process's PID. Fails if another instance
 /// holds it.
 pub(crate) fn claim_pid() -> Result<()> {
     let mut file = open_lock()?;
@@ -173,7 +173,7 @@ pub(crate) fn claim_pid() -> Result<()> {
 fn running_pid() -> Option<u32> {
     let mut file = open_lock().ok()?;
     match file.try_lock() {
-        // Nobody holds it; dropping the file releases our probe.
+        // Nobody holds it. Dropping the file releases our probe.
         Ok(()) => None,
         Err(TryLockError::WouldBlock) => {
             let mut text = String::new();

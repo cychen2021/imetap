@@ -1,6 +1,6 @@
 //! The resident macOS tool: status item, hotkeys, Ctrl double-tap, input-source watching and HUD.
 //!
-//! Everything runs on the main run loop; there are no extra threads. The keyboard and mouse are
+//! Everything runs on the main run loop. There are no extra threads. The keyboard and mouse are
 //! observed with a Quartz event tap, which needs the Accessibility permission (the same as
 //! Hammerspoon). Until it is granted the tap creation is retried every few seconds.
 
@@ -111,7 +111,7 @@ struct State {
     _status_item: Retained<NSStatusItem>,
     last: Option<Snapshot>,
     hotkeys: Vec<(u16, u64, Ime)>,
-    /// The HUD's current appearance; `Some` while a chain of step timers runs.
+    /// The HUD's current appearance. `Some` while a chain of step timers runs.
     hud_run: Option<HudRun>,
     /// The HUD's last brightness, from 0.0 to 1.0.
     hud_level: f32,
@@ -387,7 +387,7 @@ extern "C" fn tap_callback(
     };
     match kind {
         ffi::TAP_DISABLED_BY_TIMEOUT | ffi::TAP_DISABLED_BY_USER_INPUT => {
-            // The system switches a slow tap off; switch it back on.
+            // The system switches a slow tap off. Switch it back on.
             let port = TAP_PORT.with(Cell::get) as CFMachPortRef;
             // SAFETY: the port was created by `start_event_tap`.
             unsafe { ffi::CGEventTapEnable(port, true) };
@@ -444,7 +444,7 @@ fn on_tap(tap: Tap) {
         Tap::Pending => {
             let old = TRIPLE_TIMER.with(Cell::get);
             if old != 0 {
-                // SAFETY: invalidating a timer we created; harmless if it has fired already.
+                // SAFETY: invalidating a timer we created. Harmless if it has fired already.
                 unsafe { ffi::CFRunLoopTimerInvalidate(old as CFRunLoopTimerRef) };
             }
             let wait = TAP.with(|t| t.borrow().triple_ms()) as f64 / 1000.0;
@@ -491,7 +491,7 @@ fn act(action: Action) {
     });
 }
 
-/// Reads the state; shows the HUD only if it differs from the last one seen, or if `force`.
+/// Reads the state. Shows the HUD only if it differs from the last one seen, or if `force`.
 fn probe(show_if_changed: bool, force: bool) {
     STATE.with(|s| {
         let Ok(mut s) = s.try_borrow_mut() else {
@@ -552,7 +552,7 @@ fn schedule_probe() {
         };
         let Some(state) = s.as_mut() else { return };
         if let Some(old) = state.probe_timer.take() {
-            // SAFETY: invalidating a timer we created; the run loop releases it.
+            // SAFETY: invalidating a timer we created. The run loop releases it.
             unsafe { ffi::CFRunLoopTimerInvalidate(old) };
         }
         state.probe_timer = Some(schedule(DEBOUNCE_SECS, probe_timer_fired));
@@ -593,7 +593,7 @@ extern "C" fn input_source_changed(
 fn observe_changes() {
     let mtm = MainThreadMarker::new().expect("main thread");
     // SAFETY: registers a C callback with the distributed notification center and a block with the
-    // workspace; both live for the whole process.
+    // workspace. Both live for the whole process.
     unsafe {
         let name = ffi::cfstring(
             &CString::new("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged").unwrap(),
@@ -803,10 +803,10 @@ fn ns_color([r, g, b]: Rgb) -> Retained<NSColor> {
 }
 
 /// One step of the fade: sets the HUD's brightness and arms the next step, until it is over. There
-/// is at most one chain of steps; showing the HUD again only replaces its `HudRun`.
+/// is at most one chain of steps. Showing the HUD again only replaces its `HudRun`.
 extern "C" fn fade_step(timer: CFRunLoopTimerRef, _: *mut c_void) {
     // SAFETY: this one-shot timer was created by `schedule`, which hands its reference to the one
-    // callback; nothing else uses it.
+    // callback. Nothing else uses it.
     unsafe { ffi::CFRelease(timer) };
     STATE.with(|s| {
         let Ok(mut s) = s.try_borrow_mut() else {
@@ -851,7 +851,7 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
     hud.glyph.setTextColor(Some(&ns_color(colors.glyph)));
     hud.glyph
         .setStringValue(&NSString::from_str(snapshot.glyph()));
-    // A one-character label is bigger than a two-character one; the field is centred on the stripe.
+    // A one-character label is bigger than a two-character one. The field is centred on the stripe.
     let size = if style.label.chars().count() > 1 {
         24.0
     } else {
@@ -868,7 +868,7 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
         .setTextColor(Some(&ns_color(colors.stripe_text)));
     hud.stripe_label
         .setStringValue(&NSString::from_str(&style.label));
-    // The screen of the window with keyboard focus; the first (primary) screen if there is none.
+    // The screen of the window with keyboard focus. The first (primary) screen if there is none.
     let screen =
         NSScreen::mainScreen(state.mtm).or_else(|| NSScreen::screens(state.mtm).firstObject());
     if let Some(screen) = screen {

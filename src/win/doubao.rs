@@ -1,4 +1,4 @@
-//! Pipe I/O to the Doubao server; the message format is in `crate::doubao`.
+//! Pipe I/O to the Doubao server. The message format is in `crate::doubao`.
 
 use anyhow::{Result, bail};
 use windows::Win32::Foundation::{
@@ -28,7 +28,7 @@ impl Drop for Pipe {
 fn open() -> Result<Pipe> {
     let name = HSTRING::from(PIPE);
     for _ in 0..2 {
-        // SAFETY: `name` outlives the call; the returned handle is owned by `Pipe`.
+        // SAFETY: `name` outlives the call. The returned handle is owned by `Pipe`.
         let opened = unsafe {
             CreateFileW(
                 &name,

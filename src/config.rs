@@ -3,7 +3,7 @@
 //! The file is looked up in `$XDG_CONFIG_HOME/imetap/` when that variable is set, and otherwise in
 //! the platform's default configuration directory (`%APPDATA%` on Windows,
 //! `~/Library/Application Support` on macOS, `~/.config` elsewhere). A missing file means all
-//! defaults; every key is optional.
+//! defaults. Every key is optional.
 
 use std::env;
 use std::fs;
@@ -93,7 +93,7 @@ pub struct TapConfig {
     pub gap_ms: u64,
     /// Longest time Ctrl may be held for a press to still be a tap, in milliseconds.
     pub hold_ms: u64,
-    /// How long to wait after a double tap for a third tap, in milliseconds; 0 turns triple taps
+    /// How long to wait after a double tap for a third tap, in milliseconds. 0 turns triple taps
     /// off, so double taps act at once.
     pub triple_ms: u64,
     /// Hold back keys typed while a double tap is being applied, and replay them afterwards, so
@@ -113,7 +113,7 @@ impl Default for TapConfig {
     }
 }
 
-/// `[hotkeys]`: one shortcut per input method; an empty string disables it.
+/// `[hotkeys]`: one shortcut per input method. An empty string disables it.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct HotkeyConfig {
@@ -144,9 +144,9 @@ pub struct HudConfig {
     pub wait_for_text_field: bool,
     /// How long it stays fully visible, in milliseconds.
     pub duration_ms: u64,
-    /// How long it takes to fade in, in milliseconds; 0 for none.
+    /// How long it takes to fade in, in milliseconds. 0 for none.
     pub fade_in_ms: u64,
-    /// How long it takes to fade out, in milliseconds; 0 for none.
+    /// How long it takes to fade out, in milliseconds. 0 for none.
     pub fade_out_ms: u64,
     /// 0.0 (invisible) to 1.0 (opaque).
     pub opacity: f32,
@@ -231,7 +231,7 @@ impl HudConfig {
         Fade::new(self.fade_in_ms, self.duration_ms, self.fade_out_ms)
     }
 
-    /// What the HUD draws for a state. The background follows the mode; an input method without a
+    /// What the HUD draws for a state. The background follows the mode. An input method without a
     /// mode takes its own colour for the background.
     pub fn style(&self, snapshot: Snapshot) -> HudStyle {
         let (stripe, label) = match (snapshot.ime, snapshot.other_name()) {
@@ -314,7 +314,7 @@ impl Config {
         Ok(config)
     }
 
-    /// Reads the file; a missing file gives the defaults.
+    /// Reads the file. A missing file gives the defaults.
     pub fn load(path: &Path) -> Result<Config> {
         match fs::read_to_string(path) {
             Ok(text) => Config::parse(&text).with_context(|| format!("invalid {}", path.display())),
@@ -368,7 +368,7 @@ impl Config {
     }
 }
 
-/// A commented `config.toml` with every default spelled out (`config.example.toml`); written by
+/// A commented `config.toml` with every default spelled out (`config.example.toml`). Written by
 /// `imetap config init`.
 pub const DEFAULT_TOML: &str = include_str!("../config.example.toml");
 

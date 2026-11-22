@@ -1,6 +1,6 @@
 //! The resident tool: tray icon, hotkeys, Ctrl double-tap, window-change watching and the HUD.
 //!
-//! Everything runs on one message-loop thread, driven by events; nothing polls. Work that can
+//! Everything runs on one message-loop thread, driven by events. Nothing polls. Work that can
 //! block (UI Automation, the Doubao pipe, `SendInput`) goes to a worker thread, which reports back
 //! with a posted message.
 
@@ -116,7 +116,7 @@ struct Outcome {
     snapshot: Snapshot,
     /// Show the HUD even if the state did not change.
     force: bool,
-    /// Whether focus is in a text field; `true` when it was not asked for or cannot be told.
+    /// Whether focus is in a text field. `true` when it was not asked for or cannot be told.
     text_focus: bool,
     error: Option<String>,
 }
@@ -127,7 +127,7 @@ struct App {
     jobs: Sender<Job>,
     outcomes: Arc<Mutex<VecDeque<Outcome>>>,
     last: Option<Snapshot>,
-    /// The state when focus was last in a text field; only that counts as a change worth a HUD.
+    /// The state when focus was last in a text field. Only that counts as a change worth a HUD.
     last_text: Option<Snapshot>,
     tray_icon: Option<HICON>,
 }
@@ -138,7 +138,7 @@ thread_local! {
     static TAP: RefCell<TapDetector> = RefCell::new(TapDetector::default());
     static MAIN: Cell<isize> = const { Cell::new(0) };
     static TAP_ENABLED: Cell<bool> = const { Cell::new(false) };
-    /// Keys typed while a double tap is applied; touched by the keyboard hook, so kept out of `APP`.
+    /// Keys typed while a double tap is applied. Touched by the keyboard hook, so kept out of `APP`.
     static HOLD: RefCell<KeyHold> = RefCell::new(KeyHold::default());
     static HOLD_ENABLED: Cell<bool> = const { Cell::new(false) };
     /// `None` when the reminder is off. Touched by the hooks, so kept out of `APP` like `TAP`.
@@ -251,7 +251,7 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 }
             };
             if toggled {
-                // The toggle is in; let the input method apply it, then release the held-back keys.
+                // The toggle is in. Let the input method apply it, then release the held-back keys.
                 thread::sleep(APPLY);
                 post(WM_DRAIN);
             }
@@ -337,7 +337,7 @@ fn create_window(instance: HINSTANCE) -> Result<HWND> {
 
 // ---- hooks -------------------------------------------------------------------------------------
 
-/// The low-level and WinEvent hooks; removed on drop.
+/// The low-level and WinEvent hooks. Removed on drop.
 struct Hooks {
     keyboard: Option<HHOOK>,
     mouse: Option<HHOOK>,
@@ -396,7 +396,7 @@ impl Drop for Hooks {
     }
 }
 
-/// Feeds key or mouse activity to the reminder; cheap enough for every mouse move.
+/// Feeds key or mouse activity to the reminder. Cheap enough for every mouse move.
 fn note_activity() {
     let resumed = REMINDER.with(|r| {
         r.borrow_mut()
@@ -448,7 +448,7 @@ fn drain(hwnd: HWND) {
     let held = HOLD.with(|h| h.borrow_mut().take());
     if held.is_empty() {
         HOLD.with(|h| h.borrow_mut().stop());
-        // SAFETY: stops the timer set in `begin_hold`; fails harmlessly when it is not running.
+        // SAFETY: stops the timer set in `begin_hold`. Fails harmlessly when it is not running.
         unsafe { KillTimer(Some(hwnd), TIMER_HOLD).ok() };
     } else {
         send(Job::Replay(held));
@@ -457,7 +457,7 @@ fn drain(hwnd: HWND) {
 
 fn post_main(message: u32) {
     let hwnd = MAIN.with(Cell::get);
-    // SAFETY: posting to the main window; failure just means it is gone.
+    // SAFETY: posting to the main window. Failure just means it is gone.
     unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), message, WPARAM(0), LPARAM(0)).ok() };
 }
 
@@ -489,7 +489,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                 WM_KEYUP | WM_SYSKEYUP => t.borrow_mut().key_up(key, now),
                 _ => Tap::None,
             });
-            // A key typed while a double tap is being applied waits for it; this runs before
+            // A key typed while a double tap is being applied waits for it. This runs before
             // `post_tap`, so the Ctrl release that completes the double tap itself goes through.
             let held = HOLD.with(|h| {
                 h.borrow_mut().capture(HeldKey {
@@ -540,7 +540,7 @@ unsafe extern "system" fn win_event_proc(
     _: u32,
 ) {
     if event == EVENT_OBJECT_FOCUS {
-        // Only interesting while the HUD waits for a text field; focus moves all the time.
+        // Only interesting while the HUD waits for a text field. Focus moves all the time.
         if WAIT_FOR_TEXT.with(Cell::get) {
             post_main(WM_PASSIVE);
         }
@@ -586,7 +586,7 @@ fn modifiers(shortcut: &Shortcut) -> HOT_KEY_MODIFIERS {
 
 const HOTKEY_IMES: [Ime; 3] = [Ime::Us, Ime::Pinyin, Ime::Doubao];
 
-/// Registers the configured hotkeys; returns the ids that succeeded. The id is the index in
+/// Registers the configured hotkeys. Returns the ids that succeeded. The id is the index in
 /// `HOTKEY_IMES`.
 fn register_hotkeys(hwnd: HWND, config: &Config) -> Vec<i32> {
     let mut registered = Vec::new();
@@ -650,7 +650,7 @@ fn update_tray(hwnd: HWND, snapshot: Option<Snapshot>, add: bool) {
             .and_then(|app| app.tray_icon.replace(icon))
     });
     if let Some(old) = old {
-        // SAFETY: the shell has switched to the new icon; the old handle is ours to free.
+        // SAFETY: the shell has switched to the new icon. The old handle is ours to free.
         unsafe { DestroyIcon(old).ok() };
     }
 }
@@ -681,7 +681,7 @@ fn icon_color(snapshot: Option<Snapshot>) -> COLORREF {
 /// A 32 x 32 icon: the mode glyph in white on a colour that tells the mode at a glance.
 fn make_icon(glyph: &str, snapshot: Option<Snapshot>) -> HICON {
     const SIZE: i32 = 32;
-    // SAFETY: GDI objects created here are released before returning; the icon owns copies.
+    // SAFETY: GDI objects created here are released before returning. The icon owns copies.
     unsafe {
         let screen = GetDC(None);
         let mem = CreateCompatibleDC(Some(screen));
@@ -777,7 +777,7 @@ fn open_config() -> Result<()> {
         fs::create_dir_all(path.parent().context("no parent directory")?)?;
         fs::write(&path, config::DEFAULT_TOML)?;
     }
-    // SAFETY: shell-opens a file path; the HSTRING outlives the call.
+    // SAFETY: shell-opens a file path. The HSTRING outlives the call.
     unsafe {
         ShellExecuteW(
             None,
@@ -852,7 +852,7 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // At login this tool may start before the taskbar exists; the icon is added again when it appears.
+    // At login this tool may start before the taskbar exists. The icon is added again when it appears.
     if message != 0 && message == TASKBAR_CREATED.with(Cell::get) {
         let last = APP.with(|a| a.borrow().as_ref().and_then(|app| app.last));
         update_tray(hwnd, last, true);
@@ -911,7 +911,7 @@ unsafe extern "system" fn window_proc(
         WM_TIMER if wparam.0 == TIMER_DEBOUNCE => {
             // SAFETY: stops the timer set above.
             unsafe { KillTimer(Some(hwnd), TIMER_DEBOUNCE).ok() };
-            // A pending reminder shows the HUD whatever the state; it waits for the debounce so that
+            // A pending reminder shows the HUD whatever the state. It waits for the debounce so that
             // it reads the window that has just come to the front.
             let remind = REMIND_PENDING.with(|p| p.replace(false));
             let check = APP.with(|a| {

@@ -290,7 +290,7 @@ mod platform {
     }
 
     pub fn open(path: &Path) -> Result<()> {
-        // SAFETY: shell-opens a path; the HSTRING outlives the call.
+        // SAFETY: shell-opens a path. The HSTRING outlives the call.
         unsafe {
             ShellExecuteW(
                 None,

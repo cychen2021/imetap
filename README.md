@@ -3,8 +3,8 @@
 A small tray tool for Windows and macOS that makes switching between Chinese and English input painless.
 
 - Global hotkeys switch the input method: `Ctrl+Shift+S` US, `Ctrl+Shift+F` Microsoft Pinyin (Shuangpin on macOS), `Ctrl+Shift+D` Doubao.
-- Double-tap `Ctrl` to toggle Chinese/English in the current input method; triple-tap it to show the HUD without changing anything.
-- A small translucent HUD at the bottom of the current window's monitor (red for Chinese, blue for English and the US layout, with a bright stripe on the left whose colour and label name the input method, such as orange "豆" for Doubao; an input method imetap does not know gets a label and colour from its name) shows the new state after every change, and also when you switch to a window whose input method or mode differs (they are per window on Windows, where the HUD then waits until the focus is in a text field, so that passing through windows does not flash it; see `wait_for_text_field`).
+- Double-tap `Ctrl` to toggle Chinese/English in the current input method. Triple-tap it to show the HUD without changing anything.
+- A small translucent HUD at the bottom of the current window's monitor (red for Chinese, blue for English and the US layout, with a bright stripe on the left whose colour and label name the input method, such as orange "豆" for Doubao. An input method imetap does not know gets a label and colour from its name) shows the new state after every change, and also when you switch to a window whose input method or mode differs (they are per window on Windows, where the HUD then waits until the focus is in a text field, so that passing through windows does not flash it. See `wait_for_text_field`).
 - Optionally, a reminder shows the HUD again when you come back after the computer sat idle, and (in `resume-and-switch` mode) when you leave a window you used for a long time without seeing the HUD.
 - A tray icon shows the current state at a glance: red for Chinese, blue for English, grey for the US layout.
 - It is event-driven and does not poll.
@@ -28,20 +28,20 @@ imetap autostart enable|disable|status
 imetap config path|init|edit|check
 ```
 
-On Windows, `imetap.exe` is a GUI-subsystem program, so its output does not reach pipes or scripts. `imetapctl` takes the same commands (except that it starts nothing by itself) as a console program with normal output; it launches and registers the `imetap` next to it. On macOS it is only a stub; use `imetap` there.
+On Windows, `imetap.exe` is a GUI-subsystem program, so its output does not reach pipes or scripts. `imetapctl` takes the same commands (except that it starts nothing by itself) as a console program with normal output. It launches and registers the `imetap` next to it. On macOS it is only a stub. Use `imetap` there.
 
 `imetap run` runs in the foreground. The tray menu offers "Run at login", "Open config file" and "Quit".
 
 ## Configuration
 
-`config.toml` lives in `$XDG_CONFIG_HOME/imetap/`, or the platform default (`%APPDATA%\imetap` on Windows, `~/Library/Application Support/imetap` on macOS). Every key is optional. `imetap config init` writes the defaults with comments, the same as [`config.example.toml`](config.example.toml); restart with `imetap restart` after editing.
+`config.toml` lives in `$XDG_CONFIG_HOME/imetap/`, or the platform default (`%APPDATA%\imetap` on Windows, `~/Library/Application Support/imetap` on macOS). Every key is optional. `imetap config init` writes the defaults with comments, the same as [`config.example.toml`](config.example.toml). Restart with `imetap restart` after editing.
 
 ```toml
 [tap]
 enabled = true
 gap_ms = 500     # longest time between the two taps
 hold_ms = 300    # longest time Ctrl may be held for a press to count as a tap
-triple_ms = 300  # wait this long after a double tap for a third (delays the toggle); 0 = off
+triple_ms = 300  # wait this long after a double tap for a third (delays the toggle). 0 = off
 
 [hotkeys]        # an empty string disables a hotkey
 us = "Ctrl+Shift+S"
@@ -57,7 +57,7 @@ fade_in_ms = 350    # fade-in time, 0 for none
 fade_out_ms = 250   # fade-out time, 0 for none
 opacity = 0.85
 
-[hud.colors]      # background by mode; names: red, orange, green, teal, blue, purple, pink, brown, grey, black
+[hud.colors]      # background by mode. Names: red, orange, green, teal, blue, purple, pink, brown, grey, black
 chinese = "red"
 english = "blue"
 
@@ -87,7 +87,7 @@ On macOS the reminder sees changes of the frontmost application, not of windows 
 ## Notes
 
 - Windows: Microsoft Pinyin has no supported API to set its mode in modern apps, so imetap sends the Windows IME toggle hotkey configured in your settings (read from the registry, `Ctrl+Space` by default). The mode is read from the taskbar's input indicator through UI Automation. Doubao is controlled over its own named pipe.
-- macOS: the macOS port is untested; it needs the Accessibility permission, and the double-tap swaps the US source with the last-used Chinese one because there is no mode to read.
+- macOS: the macOS port is untested. It needs the Accessibility permission, and the double-tap swaps the US source with the last-used Chinese one because there is no mode to read.
 
 ## License
 

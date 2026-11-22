@@ -1,6 +1,6 @@
 //! Windows implementation.
 //!
-//! Everything that touches the Win32 API is in this module tree; the unsafe calls are confined to
+//! Everything that touches the Win32 API is in this module tree. The unsafe calls are confined to
 //! thin wrappers with a safety comment.
 
 pub mod app;
@@ -45,7 +45,7 @@ pub fn debug_log(message: impl FnOnce() -> String) {
 
 /// Initialises COM for the calling thread. Every thread that uses the types below needs this.
 pub fn init_com() {
-    // SAFETY: called once per thread; a repeated call returns S_FALSE, which is fine.
+    // SAFETY: called once per thread. A repeated call returns S_FALSE, which is fine.
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().ok() };
 }
 
@@ -83,7 +83,7 @@ impl Engine {
     ///
     /// A Chromium window (Chrome, Edge, any Electron app) that shows only a bare window has its
     /// accessibility tree not ready yet, since Chromium builds it on the first request. Ask again a
-    /// few times; if it is still not there, it does not count as a text field, and the next focus
+    /// few times. If it is still not there, it does not count as a text field, and the next focus
     /// change, key press or click checks again. Other bare windows are custom-drawn apps, which
     /// tell nothing and count as text fields.
     pub fn focus_in_text_field(&self) -> (bool, Option<uia::FocusInfo>) {

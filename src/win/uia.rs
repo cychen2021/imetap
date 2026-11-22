@@ -50,7 +50,7 @@ const CONTROL_PANE: i32 = 50033;
 /// Whether typing would go to a text field, given what UI Automation reports for the focus.
 ///
 /// Browsers and Electron apps expose their page as a read-only `Document` and real inputs as
-/// writable `Edit`s; native and WinUI inputs are `Edit`s or writable value elements; Word-like
+/// writable `Edit`s. Native and WinUI inputs are `Edit`s or writable value elements. Word-like
 /// editors and Windows Terminal expose the text pattern. A custom-drawn window (WezTerm, games) shows
 /// up only as a bare window, which tells nothing, so it counts as a text field: showing the HUD too
 /// often is better than never.

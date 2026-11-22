@@ -155,13 +155,13 @@ fn string_of(s: CFStringRef) -> Option<String> {
 }
 
 fn id_of(source: CFTypeRef) -> Option<String> {
-    // SAFETY: `source` is a live TISInputSource; the property is owned by it ("get" rule).
+    // SAFETY: `source` is a live TISInputSource. The property is owned by it ("get" rule).
     string_of(unsafe { TISGetInputSourceProperty(source, kTISPropertyInputSourceID) })
 }
 
 /// The localized name of the current keyboard input source, as the input menu shows it.
 pub fn current_source_name() -> Option<String> {
-    // SAFETY: "copy" rule: the source is released after reading; the name belongs to it ("get" rule).
+    // SAFETY: "copy" rule: the source is released after reading. The name belongs to it ("get" rule).
     unsafe {
         let source = TISCopyCurrentKeyboardInputSource();
         if source.is_null() {
@@ -189,7 +189,7 @@ pub fn current_source() -> Option<String> {
 
 /// Selects the enabled input source with the given identifier.
 pub fn select_source(wanted: &str) -> Result<()> {
-    // SAFETY: the list follows the "create" rule and is released; sources stay valid while it lives.
+    // SAFETY: the list follows the "create" rule and is released. Sources stay valid while it lives.
     unsafe {
         let list = TISCreateInputSourceList(std::ptr::null(), false);
         if list.is_null() {
@@ -234,7 +234,7 @@ pub fn ensure_accessibility() -> bool {
     }
 }
 
-/// A CFString from a Rust string; the caller owns it.
+/// A CFString from a Rust string. The caller owns it.
 pub fn cfstring(text: &CStr) -> CFStringRef {
     // SAFETY: `text` is NUL-terminated.
     unsafe { CFStringCreateWithCString(std::ptr::null(), text.as_ptr(), kCFStringEncodingUTF8) }

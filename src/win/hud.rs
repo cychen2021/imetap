@@ -128,7 +128,7 @@ impl Hud {
                 cbSize: size_of::<MONITORINFO>() as u32,
                 ..Default::default()
             };
-            // The monitor of the foreground window; the primary one if there is none.
+            // The monitor of the foreground window. The primary one if there is none.
             let target = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
             let _ = GetMonitorInfoW(target, &mut monitor);
             let area = monitor.rcWork;

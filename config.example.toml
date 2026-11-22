@@ -1,15 +1,15 @@
-# imetap configuration. Every key is optional; the values below are the defaults.
+# imetap configuration. Every key is optional. The values below are the defaults.
 # Restart imetap after editing (`imetap restart`).
 
 [tap]
-# Double-tap Ctrl to toggle Chinese/English; triple-tap it to show the HUD without changing anything.
+# Double-tap Ctrl to toggle Chinese/English. Triple-tap it to show the HUD without changing anything.
 enabled = true
 # Longest time between the two taps, in milliseconds.
 gap_ms = 500
 # Longest time Ctrl may be held for a press to count as a tap, in milliseconds.
 hold_ms = 300
 # How long to wait after a double tap for a third tap, in milliseconds. The toggle waits this long
-# too; 0 turns triple taps off, so the toggle is immediate.
+# too. 0 turns triple taps off, so the toggle is immediate.
 triple_ms = 300
 # Hold back the keys typed while a double tap is being applied (including the wait for a third tap)
 # and replay them afterwards, so that they reach the application in the new mode. Windows only.
@@ -27,11 +27,11 @@ enabled = true
 # Also show the HUD when switching to a window whose input method or mode differs.
 on_window_switch = true
 # With on_window_switch, wait until focus is in a text field before showing the HUD, so that merely
-# passing through windows does not flash it. Windows only; where the focus cannot be told, it shows.
+# passing through windows does not flash it. Windows only. Where the focus cannot be told, it shows.
 wait_for_text_field = true
 # How long it stays fully visible, in milliseconds.
 duration_ms = 1500
-# How long it takes to fade in and to fade out, in milliseconds; 0 for none.
+# How long it takes to fade in and to fade out, in milliseconds. 0 for none.
 fade_in_ms = 350
 fade_out_ms = 250
 # 0.05 (almost invisible) to 1.0 (opaque).
