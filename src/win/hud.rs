@@ -1,6 +1,7 @@
 //! The HUD: a translucent, click-through, always-on-top box in the middle of the primary monitor.
 
 use std::cell::RefCell;
+use std::time::Instant;
 
 use anyhow::Result;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -13,22 +14,21 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetForegroundWindow, HWND_TOPMOST, KillTimer, LWA_ALPHA,
-    RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
-    SetTimer, SetWindowPos, ShowWindow, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GetForegroundWindow, HWND_TOPMOST, IsWindowVisible, KillTimer,
+    LWA_ALPHA, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+    SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, WM_PAINT, WM_TIMER,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::config::HudConfig;
+use crate::fade::Fade;
 use crate::state::{Color, HudStyle, Rgb, Snapshot};
 
-/// Timer that starts the fade-out once the hold time is over.
-const TIMER_HOLD: usize = 1;
-/// Timer that steps the fade-out.
-const TIMER_FADE: usize = 2;
-const FADE_STEPS: u32 = 8;
-const FADE_STEP_MS: u32 = 20;
+/// Timer that steps the brightness: fade in, hold, fade out.
+const TIMER_FADE: usize = 1;
+const FADE_STEP_MS: u32 = 15;
 
 /// Logical size of the box (at 96 DPI).
 const WIDTH: i32 = 240;
@@ -41,8 +41,15 @@ const BOTTOM_MARGIN: i32 = 48;
 struct Shown {
     snapshot: Snapshot,
     style: HudStyle,
+    /// The window's alpha at full brightness, from the configured opacity.
     alpha: u8,
-    fade_step: u32,
+    fade: Fade,
+    /// When this appearance started, and how far into the curve it began (non-zero when it took
+    /// over from one that was still visible).
+    started: Instant,
+    offset_ms: u64,
+    /// The last brightness set, from 0.0 to 1.0.
+    level: f32,
 }
 
 thread_local! {
@@ -92,17 +99,29 @@ impl Hud {
     /// Shows the snapshot in the middle of the primary monitor.
     pub fn show(&self, snapshot: Snapshot, config: &HudConfig) {
         let alpha = (config.opacity.clamp(0.0, 1.0) * 255.0) as u8;
+        let fade = config.fade();
+        // Showing again while still visible carries on from the current brightness.
+        let previous = SHOWN.with(|s| s.borrow().as_ref().map(|shown| shown.level));
+        // SAFETY: querying the visibility of the window owned by `self`.
+        let visible = unsafe { IsWindowVisible(self.hwnd).as_bool() };
+        let offset_ms = match previous {
+            Some(level) if visible => fade.start_for(level),
+            _ => 0,
+        };
+        let level = fade.level(offset_ms);
         SHOWN.with(|s| {
             *s.borrow_mut() = Some(Shown {
                 snapshot,
                 style: config.style(snapshot),
                 alpha,
-                fade_step: 0,
+                fade,
+                started: Instant::now(),
+                offset_ms,
+                level,
             })
         });
         // SAFETY: all calls operate on the window owned by `self` or on stack values.
         unsafe {
-            KillTimer(Some(self.hwnd), TIMER_FADE).ok();
             let scale = |v: i32| v * GetDpiForSystem() as i32 / 96;
             let (width, height) = (scale(WIDTH), scale(HEIGHT));
             let mut monitor = MONITORINFO {
@@ -117,7 +136,13 @@ impl Hud {
                 area.left + (area.right - area.left - width) / 2,
                 area.bottom - height - scale(BOTTOM_MARGIN),
             );
-            SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA).ok();
+            SetLayeredWindowAttributes(
+                self.hwnd,
+                COLORREF(0),
+                (alpha as f32 * level) as u8,
+                LWA_ALPHA,
+            )
+            .ok();
             let radius = scale(24);
             SetWindowRgn(
                 self.hwnd,
@@ -142,12 +167,7 @@ impl Hud {
             )
             .ok();
             let _ = InvalidateRect(Some(self.hwnd), None, true);
-            SetTimer(
-                Some(self.hwnd),
-                TIMER_HOLD,
-                config.duration_ms.max(1) as u32,
-                None,
-            );
+            SetTimer(Some(self.hwnd), TIMER_FADE, FADE_STEP_MS, None);
         }
     }
 }
@@ -250,34 +270,35 @@ fn paint(hwnd: HWND) {
 }
 
 fn on_timer(hwnd: HWND, id: usize) {
+    if id != TIMER_FADE {
+        return;
+    }
+    // The alpha for now, or `None` once it is over.
+    let alpha = SHOWN.with(|s| {
+        let mut s = s.borrow_mut();
+        let shown = s.as_mut()?;
+        let elapsed = shown.started.elapsed().as_millis() as u64 + shown.offset_ms;
+        if shown.fade.finished(elapsed) {
+            return None;
+        }
+        shown.level = shown.fade.level(elapsed);
+        Some((shown.alpha as f32 * shown.level) as u8)
+    });
     // SAFETY: timers and layered attributes of the window being processed.
     unsafe {
-        match id {
-            TIMER_HOLD => {
-                KillTimer(Some(hwnd), TIMER_HOLD).ok();
-                SetTimer(Some(hwnd), TIMER_FADE, FADE_STEP_MS, None);
+        match alpha {
+            Some(alpha) => {
+                SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA).ok();
             }
-            TIMER_FADE => {
-                let alpha = SHOWN.with(|s| {
-                    let mut s = s.borrow_mut();
-                    let shown = s.as_mut()?;
-                    shown.fade_step += 1;
-                    Some(
-                        (shown.alpha as u32 * (FADE_STEPS - shown.fade_step.min(FADE_STEPS))
-                            / FADE_STEPS) as u8,
-                    )
+            None => {
+                KillTimer(Some(hwnd), TIMER_FADE).ok();
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                SHOWN.with(|s| {
+                    if let Some(shown) = s.borrow_mut().as_mut() {
+                        shown.level = 0.0;
+                    }
                 });
-                match alpha {
-                    Some(a) if a > 0 => {
-                        SetLayeredWindowAttributes(hwnd, COLORREF(0), a, LWA_ALPHA).ok();
-                    }
-                    _ => {
-                        KillTimer(Some(hwnd), TIMER_FADE).ok();
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                    }
-                }
             }
-            _ => {}
         }
     }
 }

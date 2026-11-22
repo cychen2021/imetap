@@ -30,7 +30,10 @@ on_window_switch = true
 # passing through windows does not flash it. Windows only; where the focus cannot be told, it shows.
 wait_for_text_field = true
 # How long it stays fully visible, in milliseconds.
-duration_ms = 900
+duration_ms = 1500
+# How long it takes to fade in and to fade out, in milliseconds; 0 for none.
+fade_in_ms = 350
+fade_out_ms = 250
 # 0.05 (almost invisible) to 1.0 (opaque).
 opacity = 0.85
 

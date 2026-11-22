@@ -7,6 +7,7 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::{CString, c_void};
 use std::ptr::{self, NonNull};
+use std::time::Instant;
 
 use anyhow::Result;
 use block2::RcBlock;
@@ -28,6 +29,7 @@ use objc2_foundation::{
 use super::ffi::{self, CFMachPortRef, CFRunLoopTimerRef, CGEventRef, CGEventTapProxy};
 use super::{Engine, autostart_enabled, claim_pid, open, set_autostart};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
+use crate::fade::Fade;
 use crate::reminder::{Reminder, now_ms};
 use crate::state::{Color, Ime, Rgb, Snapshot};
 use crate::tap::{Key, Tap, TapDetector};
@@ -88,6 +90,18 @@ struct Hud {
     stripe_label: Retained<NSTextField>,
 }
 
+/// One appearance of the HUD, stepped by timers.
+#[derive(Clone, Copy)]
+struct HudRun {
+    fade: Fade,
+    started: Instant,
+    /// How far into the curve it began (non-zero when it took over from one still visible).
+    offset_ms: u64,
+}
+
+/// How often the HUD's brightness is updated.
+const FADE_STEP_SECS: f64 = 1.0 / 60.0;
+
 struct State {
     mtm: MainThreadMarker,
     config: Config,
@@ -97,7 +111,10 @@ struct State {
     _status_item: Retained<NSStatusItem>,
     last: Option<Snapshot>,
     hotkeys: Vec<(u16, u64, Ime)>,
-    hide_timer: Option<CFRunLoopTimerRef>,
+    /// The HUD's current appearance; `Some` while a chain of step timers runs.
+    hud_run: Option<HudRun>,
+    /// The HUD's last brightness, from 0.0 to 1.0.
+    hud_level: f32,
     probe_timer: Option<CFRunLoopTimerRef>,
 }
 
@@ -152,7 +169,8 @@ pub fn run(config: Config) -> Result<()> {
             _status_item: status_item,
             last: None,
             hotkeys,
-            hide_timer: None,
+            hud_run: None,
+            hud_level: 0.0,
             probe_timer: None,
         })
     });
@@ -784,11 +802,31 @@ fn ns_color([r, g, b]: Rgb) -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(channel(r), channel(g), channel(b), 1.0)
 }
 
-extern "C" fn hide_hud(_: CFRunLoopTimerRef, _: *mut c_void) {
+/// One step of the fade: sets the HUD's brightness and arms the next step, until it is over. There
+/// is at most one chain of steps; showing the HUD again only replaces its `HudRun`.
+extern "C" fn fade_step(timer: CFRunLoopTimerRef, _: *mut c_void) {
+    // SAFETY: this one-shot timer was created by `schedule`, which hands its reference to the one
+    // callback; nothing else uses it.
+    unsafe { ffi::CFRelease(timer) };
     STATE.with(|s| {
-        if let Some(state) = s.try_borrow().ok().as_deref().and_then(Option::as_ref) {
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return;
+        };
+        let Some(state) = s.as_mut() else { return };
+        let Some(run) = state.hud_run else { return };
+        let elapsed = run.started.elapsed().as_millis() as u64 + run.offset_ms;
+        if run.fade.finished(elapsed) {
             state.hud.panel.orderOut(None);
+            state.hud_level = 0.0;
+            state.hud_run = None;
+            return;
         }
+        state.hud_level = run.fade.level(elapsed);
+        state
+            .hud
+            .panel
+            .setAlphaValue(state.config.hud.opacity as f64 * state.hud_level as f64);
+        schedule(FADE_STEP_SECS, fade_step);
     });
 }
 
@@ -841,14 +879,24 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
         );
         hud.panel.setFrameOrigin(origin);
     }
-    hud.panel.setAlphaValue(state.config.hud.opacity as f64);
+    // Showing again while still visible carries on from the current brightness.
+    let fade = state.config.hud.fade();
+    let offset_ms = if hud.panel.isVisible() {
+        fade.start_for(state.hud_level)
+    } else {
+        0
+    };
+    state.hud_level = fade.level(offset_ms);
+    hud.panel
+        .setAlphaValue(state.config.hud.opacity as f64 * state.hud_level as f64);
     hud.panel.orderFrontRegardless();
-    if let Some(old) = state.hide_timer.take() {
-        // SAFETY: invalidating a timer we created.
-        unsafe { ffi::CFRunLoopTimerInvalidate(old) };
+    let running = state.hud_run.is_some();
+    state.hud_run = Some(HudRun {
+        fade,
+        started: Instant::now(),
+        offset_ms,
+    });
+    if !running {
+        schedule(FADE_STEP_SECS, fade_step);
     }
-    state.hide_timer = Some(schedule(
-        state.config.hud.duration_ms as f64 / 1000.0,
-        hide_hud,
-    ));
 }

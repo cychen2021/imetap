@@ -52,7 +52,9 @@ doubao = "Ctrl+Shift+D"
 enabled = true
 on_window_switch = true
 wait_for_text_field = true  # Windows: on a window switch, show the HUD only once the focus is in a text field
-duration_ms = 900
+duration_ms = 1500 # how long it stays fully visible
+fade_in_ms = 350    # fade-in time, 0 for none
+fade_out_ms = 250   # fade-out time, 0 for none
 opacity = 0.85
 
 [hud.colors]      # background by mode; names: red, orange, green, teal, blue, purple, pink, brown, grey, black

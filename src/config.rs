@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::fade::Fade;
 use crate::reminder::ReminderMode;
 use crate::state::{Color, HudColors, HudStyle, Ime, Snapshot, color_for_name, label_for_name};
 use crate::tap::TapDetector;
@@ -143,6 +144,10 @@ pub struct HudConfig {
     pub wait_for_text_field: bool,
     /// How long it stays fully visible, in milliseconds.
     pub duration_ms: u64,
+    /// How long it takes to fade in, in milliseconds; 0 for none.
+    pub fade_in_ms: u64,
+    /// How long it takes to fade out, in milliseconds; 0 for none.
+    pub fade_out_ms: u64,
     /// 0.0 (invisible) to 1.0 (opaque).
     pub opacity: f32,
     /// Background colour by mode.
@@ -221,6 +226,11 @@ impl Default for ImeLabels {
 }
 
 impl HudConfig {
+    /// The brightness curve of one appearance.
+    pub fn fade(&self) -> Fade {
+        Fade::new(self.fade_in_ms, self.duration_ms, self.fade_out_ms)
+    }
+
     /// What the HUD draws for a state. The background follows the mode; an input method without a
     /// mode takes its own colour for the background.
     pub fn style(&self, snapshot: Snapshot) -> HudStyle {
@@ -251,7 +261,9 @@ impl Default for HudConfig {
             enabled: true,
             on_window_switch: true,
             wait_for_text_field: true,
-            duration_ms: 900,
+            duration_ms: 1500,
+            fade_in_ms: 350,
+            fade_out_ms: 250,
             opacity: 0.85,
             colors: ModeColors::default(),
             ime_colors: ImeColors::default(),
@@ -330,6 +342,9 @@ impl Config {
     fn validate(&self) -> Result<()> {
         if !(0.05..=1.0).contains(&self.hud.opacity) {
             bail!("hud.opacity must be between 0.05 and 1.0");
+        }
+        if self.hud.fade_in_ms > 2000 || self.hud.fade_out_ms > 2000 {
+            bail!("hud.fade_in_ms and hud.fade_out_ms must be at most 2000");
         }
         let labels = &self.hud.ime_labels;
         for (name, label) in [
@@ -416,6 +431,18 @@ mod tests {
         assert!(Config::parse("[hud]\nopacity = 0\n").is_err());
         assert!(Config::parse("[hud]\nopacity = 1.5\n").is_err());
         assert!(Config::parse("[hud]\nopacity = 0.5\n").is_ok());
+    }
+
+    #[test]
+    fn the_fade_follows_the_config() {
+        let hud = Config::parse("[hud]\nduration_ms = 2000\nfade_in_ms = 100\nfade_out_ms = 50\n")
+            .unwrap()
+            .hud;
+        assert_eq!(hud.fade(), Fade::new(100, 2000, 50));
+        assert_eq!(HudConfig::default().fade(), Fade::new(350, 1500, 250));
+        assert!(Config::parse("[hud]\nfade_in_ms = 0\n").is_ok());
+        assert!(Config::parse("[hud]\nfade_in_ms = 5000\n").is_err());
+        assert!(Config::parse("[hud]\nfade_out_ms = 5000\n").is_err());
     }
 
     #[test]
