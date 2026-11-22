@@ -432,7 +432,7 @@ extern "C" fn tap_callback(
                     .map(|(_, _, ime)| *ime)
             });
             if let Some(ime) = hit {
-                act(Action::Set(ime));
+                act_later(Action::Set(ime));
                 // Swallow the shortcut so the frontmost app never sees it.
                 return ptr::null_mut();
             }
@@ -460,8 +460,8 @@ fn on_tap(tap: Tap) {
             let timer = schedule(wait, triple_timer_fired);
             TRIPLE_TIMER.with(|t| t.set(timer as usize));
         }
-        Tap::Double => act(Action::Toggle),
-        Tap::Triple => act(Action::Show),
+        Tap::Double => act_later(Action::Toggle),
+        Tap::Triple => act_later(Action::Show),
     }
 }
 
@@ -477,6 +477,20 @@ enum Action {
     Toggle,
     /// Show the HUD without changing anything.
     Show,
+}
+
+/// Performs an action on the main queue, after the current callback returns. The event tap calls
+/// this: every key waits while the tap callback runs, and an action can block for up to the
+/// Mingkuai call timeout when its server is busy.
+fn act_later(action: Action) {
+    extern "C" fn run(context: *mut c_void) {
+        // SAFETY: `context` is the box made below, and the queue runs this once.
+        let action = unsafe { Box::from_raw(context.cast::<Action>()) };
+        act(*action);
+    }
+    let context = Box::into_raw(Box::new(action)).cast::<c_void>();
+    // SAFETY: the main queue takes the box and gives it back to `run`.
+    unsafe { ffi::dispatch_async_f(&raw const ffi::_dispatch_main_q, context, run) };
 }
 
 /// Performs an action and always shows the result.
