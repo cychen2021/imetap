@@ -17,6 +17,8 @@ imetap start
 imetap autostart enable
 ```
 
+On macOS, install with `scripts/install-mac.sh` instead of `cargo install`. It signs the binary with a self-signed certificate (created in the login keychain on the first run), so the Accessibility permission survives reinstalls. An ad-hoc signed binary is identified by its hash and loses the permission on every rebuild. Only once, after the first run (when the certificate is created), remove the old imetap entry under System Settings > Privacy & Security > Accessibility and grant access again. Later runs reuse the certificate and keep the permission. `scripts/install-mac.sh --no-install` only re-signs the installed binary, e.g. after a plain `cargo install`.
+
 ## Usage
 
 ```
