@@ -13,17 +13,15 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DI_NORMAL, DefWindowProcW, DrawIconEx, GetForegroundWindow, HICON,
-    HWND_TOPMOST, KillTimer, LWA_ALPHA, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, WM_PAINT, WM_TIMER,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GetForegroundWindow, HWND_TOPMOST, KillTimer, LWA_ALPHA,
+    RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
+    SetTimer, SetWindowPos, ShowWindow, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
-use super::icons;
 use crate::config::HudConfig;
-use crate::state::{HudColors, Rgb, Snapshot};
+use crate::state::{Color, HudStyle, Rgb, Snapshot};
 
 /// Timer that starts the fade-out once the hold time is over.
 const TIMER_HOLD: usize = 1;
@@ -33,14 +31,16 @@ const FADE_STEPS: u32 = 8;
 const FADE_STEP_MS: u32 = 20;
 
 /// Logical size of the box (at 96 DPI).
-const WIDTH: i32 = 220;
-const HEIGHT: i32 = 116;
+const WIDTH: i32 = 240;
+/// Width of the stripe on the left that names the input method.
+const STRIPE: i32 = 60;
+const HEIGHT: i32 = 100;
 /// Gap between the box and the bottom edge of the monitor's work area.
 const BOTTOM_MARGIN: i32 = 48;
 
 struct Shown {
     snapshot: Snapshot,
-    icon: Option<HICON>,
+    style: HudStyle,
     alpha: u8,
     fade_step: u32,
 }
@@ -95,7 +95,7 @@ impl Hud {
         SHOWN.with(|s| {
             *s.borrow_mut() = Some(Shown {
                 snapshot,
-                icon: icons::icon_for(snapshot.ime),
+                style: config.style(snapshot),
                 alpha,
                 fade_step: 0,
             })
@@ -201,50 +201,49 @@ fn paint(hwnd: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(hwnd, &mut ps);
-        let colors = SHOWN.with(|s| {
-            s.borrow()
-                .as_ref()
-                .map_or(HudColors::UNKNOWN, |shown| shown.snapshot.hud_colors())
-        });
-        let brush = CreateSolidBrush(rgb(colors.background));
-        FillRect(hdc, &ps.rcPaint, brush);
-        let _ = DeleteObject(HGDIOBJ(brush.0));
         SHOWN.with(|s| {
-            if let Some(shown) = s.borrow().as_ref() {
-                let dpi = GetDpiForSystem() as i32;
-                let px = |v: i32| v * dpi / 96;
-                SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, rgb(colors.glyph));
-                let glyph = RECT {
-                    left: 0,
-                    top: px(6),
-                    right: px(WIDTH),
-                    bottom: px(80),
-                };
-                draw_text(hdc, shown.snapshot.glyph(), glyph, px(60), 600);
-                if let Some(icon) = shown.icon {
-                    // The input method's own icon in the top-left corner.
-                    let _ = DrawIconEx(
-                        hdc,
-                        px(14),
-                        px(12),
-                        icon,
-                        px(26),
-                        px(26),
-                        0,
-                        None,
-                        DI_NORMAL,
-                    );
-                }
-                SetTextColor(hdc, rgb(colors.caption));
-                let caption = RECT {
-                    left: 0,
-                    top: px(78),
-                    right: px(WIDTH),
-                    bottom: px(HEIGHT - 8),
-                };
-                draw_text(hdc, &shown.snapshot.caption(), caption, px(15), 400);
-            }
+            let s = s.borrow();
+            let Some(shown) = s.as_ref() else {
+                // Nothing to show yet: a plain dark box.
+                let brush = CreateSolidBrush(rgb(Color::Black.fill()));
+                FillRect(hdc, &ps.rcPaint, brush);
+                let _ = DeleteObject(HGDIOBJ(brush.0));
+                return;
+            };
+            let colors = shown.style.colors;
+            let dpi = GetDpiForSystem() as i32;
+            let px = |v: i32| v * dpi / 96;
+            let fill = |area: &RECT, color: Rgb| {
+                let brush = CreateSolidBrush(rgb(color));
+                FillRect(hdc, area, brush);
+                let _ = DeleteObject(HGDIOBJ(brush.0));
+            };
+            fill(&ps.rcPaint, colors.background);
+            let stripe = RECT {
+                left: 0,
+                top: 0,
+                right: px(STRIPE),
+                bottom: px(HEIGHT),
+            };
+            fill(&stripe, colors.stripe);
+            SetBkMode(hdc, TRANSPARENT);
+            // The input method's label, big, in the middle of the stripe.
+            SetTextColor(hdc, rgb(colors.stripe_text));
+            let size = if shown.style.label.chars().count() > 1 {
+                32
+            } else {
+                48
+            };
+            draw_text(hdc, &shown.style.label, stripe, px(size), 700);
+            // The mode, big, in the rest of the box.
+            SetTextColor(hdc, rgb(colors.glyph));
+            let glyph = RECT {
+                left: px(STRIPE),
+                top: 0,
+                right: px(WIDTH),
+                bottom: px(HEIGHT),
+            };
+            draw_text(hdc, shown.snapshot.glyph(), glyph, px(60), 600);
         });
         let _ = EndPaint(hwnd, &ps);
     }

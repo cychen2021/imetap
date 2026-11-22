@@ -16,10 +16,9 @@ use objc2::{MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSColor,
     NSCompositingOperation, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSGraphicsContext, NSImage, NSImageView, NSMenu, NSMenuItem, NSPanel, NSScreen, NSStatusBar,
-    NSStatusItem, NSStringDrawing, NSTextAlignment, NSTextField, NSView,
-    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
-    NSWorkspaceDidActivateApplicationNotification,
+    NSGraphicsContext, NSImage, NSMenu, NSMenuItem, NSPanel, NSScreen, NSStatusBar, NSStatusItem,
+    NSStringDrawing, NSTextAlignment, NSTextField, NSView, NSWindowCollectionBehavior,
+    NSWindowStyleMask, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2_foundation::{
     MainThreadMarker, NSAttributedStringKey, NSDictionary, NSNotification, NSObject,
@@ -30,14 +29,16 @@ use super::ffi::{self, CFMachPortRef, CFRunLoopTimerRef, CGEventRef, CGEventTapP
 use super::{Engine, autostart_enabled, claim_pid, open, set_autostart};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
 use crate::reminder::{Reminder, now_ms};
-use crate::state::{HudColors, Ime, Rgb, Snapshot};
+use crate::state::{Color, Ime, Rgb, Snapshot};
 use crate::tap::{Key, Tap, TapDetector};
 
 /// How long input-source and focus notifications may settle before the state is read.
 const DEBOUNCE_SECS: f64 = 0.25;
 /// The HUD's size in points.
-const HUD_WIDTH: f64 = 220.0;
-const HUD_HEIGHT: f64 = 116.0;
+const HUD_WIDTH: f64 = 240.0;
+/// Width of the stripe on the left that names the input method.
+const HUD_STRIPE: f64 = 60.0;
+const HUD_HEIGHT: f64 = 100.0;
 const HUD_BOTTOM_MARGIN: f64 = 48.0;
 /// `NSStatusWindowLevel`.
 const STATUS_WINDOW_LEVEL: isize = 25;
@@ -81,9 +82,10 @@ define_class!(
 struct Hud {
     panel: Retained<NSPanel>,
     glyph: Retained<NSTextField>,
-    caption: Retained<NSTextField>,
-    /// The input method's own icon, top-left.
-    icon: Retained<NSImageView>,
+    /// The stripe on the left, in the input method's colour.
+    stripe: Retained<NSView>,
+    /// The input method's label on the stripe.
+    stripe_label: Retained<NSTextField>,
 }
 
 struct State {
@@ -736,40 +738,44 @@ fn make_hud(mtm: MainThreadMarker) -> Hud {
     );
     let glyph = label(
         mtm,
-        NSRect::new(NSPoint::new(0.0, 44.0), NSSize::new(HUD_WIDTH, 66.0)),
+        NSRect::new(
+            NSPoint::new(HUD_STRIPE, (HUD_HEIGHT - 66.0) / 2.0),
+            NSSize::new(HUD_WIDTH - HUD_STRIPE, 66.0),
+        ),
         52.0,
         true,
         &NSColor::whiteColor(),
     );
-    let caption = label(
-        mtm,
-        NSRect::new(NSPoint::new(0.0, 12.0), NSSize::new(HUD_WIDTH, 22.0)),
-        14.0,
-        false,
-        &NSColor::lightGrayColor(),
-    );
-    let icon = NSImageView::new(mtm);
-    // Template icons (the input methods' menu bar icons) are black; draw them white on the HUD.
-    icon.setContentTintColor(Some(&NSColor::whiteColor()));
-    icon.setFrame(NSRect::new(
-        NSPoint::new(14.0, HUD_HEIGHT - 14.0 - 26.0),
-        NSSize::new(26.0, 26.0),
+    let stripe = NSView::new(mtm);
+    stripe.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(HUD_STRIPE, HUD_HEIGHT),
     ));
+    stripe.setWantsLayer(true);
+    let stripe_label = label(
+        mtm,
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(HUD_STRIPE, 60.0)),
+        40.0,
+        true,
+        &NSColor::blackColor(),
+    );
     if let Some(view) = panel.contentView() {
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
             layer.setCornerRadius(24.0);
-            layer.setBackgroundColor(Some(&ns_color(HudColors::UNKNOWN.background).CGColor()));
+            // Clip the stripe to the rounded corners.
+            layer.setMasksToBounds(true);
+            layer.setBackgroundColor(Some(&ns_color(Color::Black.fill()).CGColor()));
         }
+        view.addSubview(&stripe);
+        view.addSubview(&stripe_label);
         view.addSubview(&glyph);
-        view.addSubview(&caption);
-        view.addSubview(&icon);
     }
     Hud {
         panel,
         glyph,
-        caption,
-        icon,
+        stripe,
+        stripe_label,
     }
 }
 
@@ -796,17 +802,34 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
         }
     });
     let hud = &state.hud;
-    let colors = snapshot.hud_colors();
+    let style = state.config.hud.style(snapshot);
+    let colors = style.colors;
     if let Some(layer) = hud.panel.contentView().and_then(|view| view.layer()) {
         layer.setBackgroundColor(Some(&ns_color(colors.background).CGColor()));
     }
+    if let Some(layer) = hud.stripe.layer() {
+        layer.setBackgroundColor(Some(&ns_color(colors.stripe).CGColor()));
+    }
     hud.glyph.setTextColor(Some(&ns_color(colors.glyph)));
-    hud.caption.setTextColor(Some(&ns_color(colors.caption)));
     hud.glyph
         .setStringValue(&NSString::from_str(snapshot.glyph()));
-    hud.caption
-        .setStringValue(&NSString::from_str(&snapshot.caption()));
-    hud.icon.setImage(ffi::current_source_icon().as_deref());
+    // A one-character label is bigger than a two-character one; the field is centred on the stripe.
+    let size = if style.label.chars().count() > 1 {
+        24.0
+    } else {
+        34.0
+    };
+    let height = size * 1.4;
+    hud.stripe_label
+        .setFont(Some(&NSFont::boldSystemFontOfSize(size)));
+    hud.stripe_label.setFrame(NSRect::new(
+        NSPoint::new(0.0, (HUD_HEIGHT - height) / 2.0),
+        NSSize::new(HUD_STRIPE, height),
+    ));
+    hud.stripe_label
+        .setTextColor(Some(&ns_color(colors.stripe_text)));
+    hud.stripe_label
+        .setStringValue(&NSString::from_str(&style.label));
     // The screen of the window with keyboard focus; the first (primary) screen if there is none.
     let screen =
         NSScreen::mainScreen(state.mtm).or_else(|| NSScreen::screens(state.mtm).firstObject());

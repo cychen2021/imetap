@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::reminder::ReminderMode;
-use crate::state::Ime;
+use crate::state::{Color, HudColors, HudStyle, Ime, Snapshot};
 use crate::tap::TapDetector;
 
 /// Modifier keys of a [`Shortcut`].
@@ -145,6 +145,102 @@ pub struct HudConfig {
     pub duration_ms: u64,
     /// 0.0 (invisible) to 1.0 (opaque).
     pub opacity: f32,
+    /// Background colour by mode.
+    pub colors: ModeColors,
+    /// Stripe colour by input method.
+    pub ime_colors: ImeColors,
+    /// The big label on the stripe, by input method.
+    pub ime_labels: ImeLabels,
+}
+
+/// `[hud.colors]`: the background for Chinese and for English mode, by colour name.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModeColors {
+    pub chinese: Color,
+    pub english: Color,
+}
+
+impl Default for ModeColors {
+    fn default() -> Self {
+        Self {
+            chinese: Color::Red,
+            english: Color::Blue,
+        }
+    }
+}
+
+/// `[hud.ime_colors]`: the stripe colour of each input method, by colour name. For an input method
+/// without a Chinese/English mode (`other`), it is the background as well.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImeColors {
+    pub us: Color,
+    /// Microsoft Pinyin on Windows.
+    pub pinyin: Color,
+    pub doubao: Color,
+    /// Shuangpin on macOS.
+    pub shuangpin: Color,
+    /// Any input method imetap does not know.
+    pub other: Color,
+}
+
+impl Default for ImeColors {
+    fn default() -> Self {
+        Self {
+            us: Color::Grey,
+            pinyin: Color::Green,
+            doubao: Color::Orange,
+            shuangpin: Color::Teal,
+            other: Color::Purple,
+        }
+    }
+}
+
+/// `[hud.ime_labels]`: the big label on the stripe, one or two characters per input method.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImeLabels {
+    pub us: String,
+    pub pinyin: String,
+    pub doubao: String,
+    pub shuangpin: String,
+    pub other: String,
+}
+
+impl Default for ImeLabels {
+    fn default() -> Self {
+        Self {
+            us: "US".into(),
+            pinyin: "微".into(),
+            doubao: "豆".into(),
+            shuangpin: "双".into(),
+            other: "其".into(),
+        }
+    }
+}
+
+impl HudConfig {
+    /// What the HUD draws for a state. The background follows the mode; an input method without a
+    /// mode takes its own colour for the background.
+    pub fn style(&self, snapshot: Snapshot) -> HudStyle {
+        let (stripe, label) = match snapshot.ime {
+            Ime::Us => (self.ime_colors.us, &self.ime_labels.us),
+            Ime::Pinyin => (self.ime_colors.pinyin, &self.ime_labels.pinyin),
+            Ime::Doubao => (self.ime_colors.doubao, &self.ime_labels.doubao),
+            Ime::Shuangpin => (self.ime_colors.shuangpin, &self.ime_labels.shuangpin),
+            Ime::Other => (self.ime_colors.other, &self.ime_labels.other),
+        };
+        let background = match snapshot.glyph() {
+            "中" => self.colors.chinese,
+            "EN" => self.colors.english,
+            _ => stripe,
+        };
+        HudStyle {
+            colors: HudColors::new(background, stripe),
+            label: label.clone(),
+        }
+    }
 }
 
 impl Default for HudConfig {
@@ -155,6 +251,9 @@ impl Default for HudConfig {
             wait_for_text_field: true,
             duration_ms: 900,
             opacity: 0.85,
+            colors: ModeColors::default(),
+            ime_colors: ImeColors::default(),
+            ime_labels: ImeLabels::default(),
         }
     }
 }
@@ -230,6 +329,18 @@ impl Config {
         if !(0.05..=1.0).contains(&self.hud.opacity) {
             bail!("hud.opacity must be between 0.05 and 1.0");
         }
+        let labels = &self.hud.ime_labels;
+        for (name, label) in [
+            ("us", &labels.us),
+            ("pinyin", &labels.pinyin),
+            ("doubao", &labels.doubao),
+            ("shuangpin", &labels.shuangpin),
+            ("other", &labels.other),
+        ] {
+            if !(1..=2).contains(&label.chars().count()) {
+                bail!("hud.ime_labels.{name} must be one or two characters");
+            }
+        }
         if self.reminder.idle_secs == 0 || self.reminder.dwell_secs == 0 {
             bail!("reminder.idle_secs and reminder.dwell_secs must be at least 1");
         }
@@ -303,6 +414,42 @@ mod tests {
         assert!(Config::parse("[hud]\nopacity = 0\n").is_err());
         assert!(Config::parse("[hud]\nopacity = 1.5\n").is_err());
         assert!(Config::parse("[hud]\nopacity = 0.5\n").is_ok());
+    }
+
+    #[test]
+    fn colours_are_chosen_by_name() {
+        let c = Config::parse(
+            "[hud.colors]\nchinese = \"purple\"\n[hud.ime_colors]\ndoubao = \"pink\"\n",
+        )
+        .unwrap();
+        assert_eq!(c.hud.colors.chinese, Color::Purple);
+        assert_eq!(c.hud.colors.english, Color::Blue);
+        assert_eq!(c.hud.ime_colors.doubao, Color::Pink);
+        assert!(Config::parse("[hud.colors]\nchinese = \"#ff0000\"\n").is_err());
+        assert!(Config::parse("[hud.colors]\nchinese = \"chartreuse\"\n").is_err());
+    }
+
+    #[test]
+    fn labels_are_one_or_two_characters() {
+        assert!(Config::parse("[hud.ime_labels]\ndoubao = \"豆包\"\n").is_ok());
+        assert!(Config::parse("[hud.ime_labels]\ndoubao = \"\"\n").is_err());
+        assert!(Config::parse("[hud.ime_labels]\ndoubao = \"豆包输\"\n").is_err());
+    }
+
+    #[test]
+    fn the_background_follows_the_mode_and_the_stripe_the_input_method() {
+        let hud = HudConfig::default();
+        let zh = hud.style(Snapshot::new(Ime::Doubao, Some(true)));
+        assert_eq!(zh.colors, HudColors::new(Color::Red, Color::Orange));
+        assert_eq!(zh.label, "豆");
+        let en = hud.style(Snapshot::new(Ime::Pinyin, Some(false)));
+        assert_eq!(en.colors, HudColors::new(Color::Blue, Color::Green));
+        let us = hud.style(Snapshot::new(Ime::Us, None));
+        assert_eq!(us.colors, HudColors::new(Color::Blue, Color::Grey));
+        assert_eq!(us.label, "US");
+        // Without a mode, the input method's own colour is the background.
+        let other = hud.style(Snapshot::new(Ime::Other, None));
+        assert_eq!(other.colors, HudColors::new(Color::Purple, Color::Purple));
     }
 
     #[test]

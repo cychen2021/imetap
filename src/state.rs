@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use serde::Deserialize;
+
 /// The input methods the tool knows about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ime {
@@ -55,35 +57,86 @@ impl Ime {
 /// An sRGB colour.
 pub type Rgb = [u8; 3];
 
+/// A colour the HUD can be configured with, by name. Each has a deep shade for backgrounds, with
+/// white text on it, and a bright shade for the input method's stripe, with dark text on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Color {
+    Red,
+    Orange,
+    Green,
+    Teal,
+    Blue,
+    Purple,
+    Pink,
+    Brown,
+    Grey,
+    Black,
+}
+
+impl Color {
+    /// The deep shade, for backgrounds.
+    pub fn fill(self) -> Rgb {
+        match self {
+            Color::Red => [0xA8, 0x32, 0x2B],
+            Color::Orange => [0xB8, 0x52, 0x0A],
+            Color::Green => [0x2E, 0x7D, 0x32],
+            Color::Teal => [0x14, 0x74, 0x6F],
+            Color::Blue => [0x1F, 0x5A, 0xA6],
+            Color::Purple => [0x6A, 0x3F, 0xA0],
+            Color::Pink => [0xB0, 0x3A, 0x74],
+            Color::Brown => [0x6D, 0x4C, 0x41],
+            Color::Grey => [0x5F, 0x63, 0x68],
+            Color::Black => [0x20, 0x21, 0x24],
+        }
+    }
+
+    /// The bright shade, for the stripe.
+    pub fn accent(self) -> Rgb {
+        match self {
+            Color::Red => [0xF2, 0x7B, 0x72],
+            Color::Orange => [0xFF, 0xA7, 0x4A],
+            Color::Green => [0x6C, 0xD4, 0x72],
+            Color::Teal => [0x45, 0xD3, 0xC9],
+            Color::Blue => [0x6B, 0xAA, 0xF2],
+            Color::Purple => [0xB8, 0x92, 0xF0],
+            Color::Pink => [0xF2, 0x84, 0xB6],
+            Color::Brown => [0xC9, 0xA4, 0x82],
+            Color::Grey => [0xC4, 0xC7, 0xCC],
+            Color::Black => [0x9A, 0xA0, 0xA6],
+        }
+    }
+}
+
 /// The colours of the HUD for one state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HudColors {
     pub background: Rgb,
     pub glyph: Rgb,
-    pub caption: Rgb,
+    /// The stripe on the left edge, which belongs to the input method.
+    pub stripe: Rgb,
+    /// The input method's label on the stripe.
+    pub stripe_text: Rgb,
 }
 
 impl HudColors {
-    /// Chinese: deep red, like the Windows tray icon.
-    pub const CHINESE: HudColors = HudColors {
-        background: [0xA8, 0x32, 0x2B],
-        glyph: [0xFF, 0xFF, 0xFF],
-        // White at 78% over the background.
-        caption: [0xEC, 0xD2, 0xD0],
-    };
-    /// English, including the US layout: deep blue, like the Windows tray icon.
-    pub const ENGLISH: HudColors = HudColors {
-        background: [0x1F, 0x5A, 0xA6],
-        glyph: [0xFF, 0xFF, 0xFF],
-        // White at 78% over the background.
-        caption: [0xCE, 0xDB, 0xEB],
-    };
-    /// An input method imetap does not know: neutral dark grey.
-    pub const UNKNOWN: HudColors = HudColors {
-        background: [0x20, 0x21, 0x24],
-        glyph: [0xFF, 0xFF, 0xFF],
-        caption: [0xBE, 0xC0, 0xC4],
-    };
+    /// Colours for a background and a stripe colour.
+    pub fn new(background: Color, stripe: Color) -> HudColors {
+        HudColors {
+            background: background.fill(),
+            glyph: [0xFF, 0xFF, 0xFF],
+            stripe: stripe.accent(),
+            stripe_text: [0x20, 0x21, 0x24],
+        }
+    }
+}
+
+/// Everything the HUD draws for one state, besides the state's glyph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HudStyle {
+    pub colors: HudColors,
+    /// The big text on the stripe that names the input method.
+    pub label: String,
 }
 
 /// The observable state of the foreground window's input method.
@@ -111,17 +164,7 @@ impl Snapshot {
         }
     }
 
-    /// The HUD's colours, which follow the glyph: red for "中", blue for "EN" (the US layout
-    /// included), grey for "?".
-    pub fn hud_colors(&self) -> HudColors {
-        match self.glyph() {
-            "中" => HudColors::CHINESE,
-            "EN" => HudColors::ENGLISH,
-            _ => HudColors::UNKNOWN,
-        }
-    }
-
-    /// The small text under the glyph.
+    /// The input method and mode in words, for `status` output.
     pub fn caption(&self) -> String {
         match (self.ime, self.chinese) {
             (Ime::Us | Ime::Other, _) => self.ime.display_name().to_string(),
@@ -159,30 +202,6 @@ pub fn text_field_change(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn colours_follow_the_language() {
-        assert_eq!(
-            Snapshot::new(Ime::Doubao, Some(true)).hud_colors(),
-            HudColors::CHINESE
-        );
-        assert_eq!(
-            Snapshot::new(Ime::Shuangpin, None).hud_colors(),
-            HudColors::CHINESE
-        );
-        assert_eq!(
-            Snapshot::new(Ime::Pinyin, Some(false)).hud_colors(),
-            HudColors::ENGLISH
-        );
-        assert_eq!(
-            Snapshot::new(Ime::Us, None).hud_colors(),
-            HudColors::ENGLISH
-        );
-        assert_eq!(
-            Snapshot::new(Ime::Other, None).hud_colors(),
-            HudColors::UNKNOWN
-        );
-    }
 
     #[test]
     fn glyph_and_caption_follow_the_mode() {

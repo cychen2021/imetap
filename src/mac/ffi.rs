@@ -6,11 +6,6 @@
 use std::ffi::{CStr, c_char, c_void};
 
 use anyhow::{Result, bail};
-use objc2::encode::{Encoding, RefEncode};
-use objc2::rc::Retained;
-use objc2::{AllocAnyThread, msg_send};
-use objc2_app_kit::NSImage;
-use objc2_foundation::NSString;
 
 pub type CFTypeRef = *const c_void;
 pub type CFStringRef = *const c_void;
@@ -37,10 +32,6 @@ const kCFStringEncodingUTF8: u32 = 0x0800_0100;
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     pub static kTISPropertyInputSourceID: CFStringRef;
-    static kTISPropertyIconImageURL: CFStringRef;
-    static kTISPropertyIconRef: CFStringRef;
-    fn CFURLCopyAbsoluteURL(url: CFTypeRef) -> CFTypeRef;
-    fn CFURLCopyFileSystemPath(url: CFTypeRef, path_style: CFIndex) -> CFStringRef;
     pub static kCFRunLoopCommonModes: CFStringRef;
     pub static kAXTrustedCheckOptionPrompt: CFStringRef;
     pub static kCFBooleanTrue: CFTypeRef;
@@ -165,74 +156,6 @@ fn string_of(s: CFStringRef) -> Option<String> {
 fn id_of(source: CFTypeRef) -> Option<String> {
     // SAFETY: `source` is a live TISInputSource; the property is owned by it ("get" rule).
     string_of(unsafe { TISGetInputSourceProperty(source, kTISPropertyInputSourceID) })
-}
-
-/// Carbon's `IconRef` target, declared so that `msg_send!` checks the right type encoding.
-#[repr(C)]
-pub struct OpaqueIconRef {
-    _private: [u8; 0],
-}
-
-// SAFETY: matches the `^{OpaqueIconRef=}` encoding of `-[NSImage initWithIconRef:]`.
-unsafe impl RefEncode for OpaqueIconRef {
-    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("OpaqueIconRef", &[]));
-}
-
-/// The current input source's icon, the one the input menu shows.
-///
-/// Input methods (Doubao, Shuangpin) give an image file (`kTISPropertyIconImageURL`) that is drawn
-/// as a black menu bar template; the image is marked as a template so that it can be tinted.
-/// Keyboard layouts (US) only have a coloured Carbon `IconRef`.
-pub fn current_source_icon() -> Option<Retained<NSImage>> {
-    // SAFETY: "copy" rule for the source, the absolute URL and the path string; the URL and the
-    // IconRef belong to the source, which stays alive until the image has been created (NSImage
-    // retains the IconRef).
-    unsafe {
-        let source = TISCopyCurrentKeyboardInputSource();
-        if source.is_null() {
-            return None;
-        }
-        let image = icon_from_url(TISGetInputSourceProperty(source, kTISPropertyIconImageURL))
-            .or_else(|| {
-                let icon = TISGetInputSourceProperty(source, kTISPropertyIconRef);
-                if icon.is_null() {
-                    return None;
-                }
-                let icon = icon as *const OpaqueIconRef;
-                msg_send![NSImage::alloc(), initWithIconRef: icon]
-            });
-        CFRelease(source);
-        image
-    }
-}
-
-/// Loads the image at a `CFURLRef`, which TIS gives relative to the input method's bundle.
-///
-/// # Safety
-///
-/// `url` must be null or a live `CFURLRef`.
-unsafe fn icon_from_url(url: CFTypeRef) -> Option<Retained<NSImage>> {
-    if url.is_null() {
-        return None;
-    }
-    // SAFETY: `url` is live per the contract; both copies are released here.
-    let path = unsafe {
-        let absolute = CFURLCopyAbsoluteURL(url);
-        if absolute.is_null() {
-            return None;
-        }
-        // 0 = kCFURLPOSIXPathStyle
-        let text = CFURLCopyFileSystemPath(absolute, 0);
-        CFRelease(absolute);
-        let path = string_of(text);
-        if !text.is_null() {
-            CFRelease(text);
-        }
-        path?
-    };
-    let image = NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&path))?;
-    image.setTemplate(true);
-    Some(image)
 }
 
 /// The identifier of the current keyboard input source.

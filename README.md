@@ -4,7 +4,7 @@ A small tray tool for Windows and macOS that makes switching between Chinese and
 
 - Global hotkeys switch the input method: `Ctrl+Shift+S` US, `Ctrl+Shift+F` Microsoft Pinyin (Shuangpin on macOS), `Ctrl+Shift+D` Doubao.
 - Double-tap `Ctrl` to toggle Chinese/English in the current input method; triple-tap it to show the HUD without changing anything.
-- A small translucent HUD at the bottom of the current window's monitor (red for Chinese, blue for English and the US layout) shows the new state after every change, and also when you switch to a window whose input method or mode differs (they are per window on Windows, where the HUD then waits until the focus is in a text field, so that passing through windows does not flash it; see `wait_for_text_field`).
+- A small translucent HUD at the bottom of the current window's monitor (red for Chinese, blue for English and the US layout, with a bright stripe on the left whose colour and label name the input method, such as orange "豆" for Doubao) shows the new state after every change, and also when you switch to a window whose input method or mode differs (they are per window on Windows, where the HUD then waits until the focus is in a text field, so that passing through windows does not flash it; see `wait_for_text_field`).
 - Optionally, a reminder shows the HUD again when you come back after the computer sat idle, and (in `resume-and-switch` mode) when you leave a window you used for a long time without seeing the HUD.
 - A tray icon shows the current state at a glance: red for Chinese, blue for English, grey for the US layout.
 - It is event-driven and does not poll.
@@ -54,6 +54,24 @@ on_window_switch = true
 wait_for_text_field = true  # Windows: on a window switch, show the HUD only once the focus is in a text field
 duration_ms = 900
 opacity = 0.85
+
+[hud.colors]      # background by mode; names: red, orange, green, teal, blue, purple, pink, brown, grey, black
+chinese = "red"
+english = "blue"
+
+[hud.ime_colors]  # the stripe on the left, per input method
+us = "grey"
+pinyin = "green"
+doubao = "orange"
+shuangpin = "teal"
+other = "purple"
+
+[hud.ime_labels]  # the big label on the stripe, one or two characters
+us = "US"
+pinyin = "微"
+doubao = "豆"
+shuangpin = "双"
+other = "其"
 
 [reminder]
 enabled = false

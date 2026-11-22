@@ -34,6 +34,28 @@ duration_ms = 900
 # 0.05 (almost invisible) to 1.0 (opaque).
 opacity = 0.85
 
+[hud.colors]
+# Background by mode. Colour names: red, orange, green, teal, blue, purple, pink, brown, grey, black.
+chinese = "red"
+english = "blue"
+
+[hud.ime_colors]
+# The stripe on the left edge of the HUD, one colour per input method. An input method without a
+# Chinese/English mode ("other", i.e. one imetap does not know) also gets it as the background.
+us = "grey"
+pinyin = "green"
+doubao = "orange"
+shuangpin = "teal"
+other = "purple"
+
+[hud.ime_labels]
+# The big label on the stripe, one or two characters per input method.
+us = "US"
+pinyin = "微"
+doubao = "豆"
+shuangpin = "双"
+other = "其"
+
 [reminder]
 # Show the HUD again when the input method may have been forgotten.
 enabled = false

@@ -8,7 +8,6 @@ pub mod autostart;
 pub mod doubao;
 pub mod hotkey;
 pub mod hud;
-pub mod icons;
 pub mod ime;
 pub mod uia;
 
