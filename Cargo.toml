@@ -1,6 +1,6 @@
 [package]
 name = "imetap"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Tray tool that switches input methods with hotkeys, toggles Chinese/English with a Ctrl double-tap, and shows a HUD on every change."
