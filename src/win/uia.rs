@@ -27,6 +27,9 @@ pub struct FocusInfo {
     pub value_read_only: Option<bool>,
     /// Whether the element is backed by a window of its own (custom-drawn apps expose just that).
     pub has_window: bool,
+    /// Whether the element's window class belongs to Chromium (`Chrome_WidgetWin_1`,
+    /// `Chrome_RenderWidgetHostHWND`), which also covers WebView2 apps such as the new Outlook.
+    pub chromium: bool,
 }
 
 impl FocusInfo {
@@ -122,6 +125,22 @@ pub fn foreground_is_chromium() -> bool {
     foreground_class().starts_with("Chrome_WidgetWin")
 }
 
+/// Whether a window class is a piece of the Windows shell: the taskbar, the desktop, the task view,
+/// Start and search. They expose a bare window, but nothing in them is typed into by accident.
+pub fn is_shell_class(class: &str) -> bool {
+    matches!(
+        class,
+        "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "Progman"
+            | "WorkerW"
+            | "TopLevelWindowForOverflowXamlIsland"
+            | "XamlExplorerHostIslandWindow"
+            | "MultitaskingViewFrame"
+            | "Windows.UI.Core.CoreWindow"
+    )
+}
+
 impl TrayReader {
     /// What UI Automation reports for the element that has keyboard focus.
     pub fn focus_info(&self) -> Option<FocusInfo> {
@@ -147,6 +166,9 @@ impl TrayReader {
                 has_window: element
                     .CurrentNativeWindowHandle()
                     .is_ok_and(|h| !h.0.is_null()),
+                chromium: element
+                    .CurrentClassName()
+                    .is_ok_and(|class| class.to_string().starts_with("Chrome_")),
             })
         }
     }
@@ -176,7 +198,16 @@ mod tests {
             text_pattern: text,
             value_read_only: read_only,
             has_window: window,
+            chromium: false,
         }
+    }
+
+    #[test]
+    fn shell_windows_are_recognised() {
+        assert!(is_shell_class("Shell_TrayWnd"));
+        assert!(is_shell_class("Windows.UI.Core.CoreWindow"));
+        assert!(!is_shell_class("Chrome_WidgetWin_1"));
+        assert!(!is_shell_class("Notepad"));
     }
 
     #[test]

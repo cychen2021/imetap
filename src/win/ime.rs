@@ -75,6 +75,12 @@ pub fn activate(ime: Ime) -> Result<()> {
     Ok(())
 }
 
+/// The handle of the foreground window, to notice when it changes.
+pub fn foreground() -> isize {
+    // SAFETY: querying the foreground window has no preconditions.
+    unsafe { GetForegroundWindow().0 as isize }
+}
+
 /// The keyboard layout handle of the foreground window's thread.
 pub fn layout() -> usize {
     // SAFETY: querying the layout of a window's thread has no preconditions.

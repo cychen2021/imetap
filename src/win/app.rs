@@ -10,7 +10,7 @@ use std::fs;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use windows::Win32::Foundation::{
@@ -38,16 +38,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, FindWindowW, GetCursorPos,
     GetMessageW, HHOOK, HICON, ICONINFO, KBDLLHOOKSTRUCT, KillTimer, MF_CHECKED, MF_SEPARATOR,
     MF_STRING, MSG, MSLLHOOKSTRUCT, PostMessageW, PostQuitMessage, RegisterClassExW,
-    RegisterWindowMessageW, SW_SHOWNORMAL, SetForegroundWindow, SetTimer, SetWindowsHookExW,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_HOTKEY,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_NULL, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WNDCLASSEXW, WS_OVERLAPPED,
+    RegisterWindowMessageW, SMTO_ABORTIFHUNG, SW_SHOWNORMAL, SendMessageTimeoutW,
+    SetForegroundWindow, SetTimer, SetWindowsHookExW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WNDCLASSEXW, WS_OVERLAPPED,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
 use super::hud::{Hud, draw_text};
-use super::{Engine, autostart, debug_log, hotkey, init_com, uia};
+use super::{Engine, autostart, debug_log, debug_log_enabled, hotkey, init_com, uia};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
 use crate::hold::{HeldKey, KeyHold};
 use crate::reminder::{Reminder, now_ms};
@@ -82,6 +83,11 @@ const HOLD_TIMEOUT_MS: u32 = 1000;
 const DEBOUNCE_MS: u32 = 250;
 /// How long the worker waits after an action before reading the state back.
 const SETTLE: Duration = Duration::from_millis(150);
+/// How the worker waits for a switch to take effect: the number of polls, the time between them
+/// and the poll at which the request is sent once more.
+const SWITCH_STEPS: u32 = 16;
+const SWITCH_STEP: Duration = Duration::from_millis(50);
+const SWITCH_RETRY_AT: u32 = 6;
 /// How long the worker waits after a toggle before releasing the held-back keys, for the input
 /// method to apply it.
 const APPLY: Duration = Duration::from_millis(50);
@@ -150,6 +156,8 @@ thread_local! {
     static REMIND_PENDING: Cell<bool> = const { Cell::new(false) };
     /// The id of the `TaskbarCreated` broadcast, sent when Explorer (re)starts its taskbar.
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
+    /// The id of the message `status` sends to ask whether the debug log is on.
+    static DEBUG_QUERY_MESSAGE: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Runs the tool until the user quits from the tray menu.
@@ -197,6 +205,8 @@ pub fn run(config: Config) -> Result<()> {
     });
     // SAFETY: registers a window message by name.
     TASKBAR_CREATED.with(|m| m.set(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) }));
+    // SAFETY: registers a window message by name.
+    DEBUG_QUERY_MESSAGE.with(|m| m.set(unsafe { RegisterWindowMessageW(DEBUG_QUERY) }));
     add_tray(hwnd);
     send(Job::Probe);
 
@@ -235,7 +245,19 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
             unsafe { PostMessageW(Some(HWND(main as *mut _)), message, WPARAM(0), LPARAM(0)).ok() };
         };
         for job in rx {
+            let label = match &job {
+                Job::Set(ime) => format!("set {ime:?}"),
+                Job::Toggle => "toggle".to_string(),
+                Job::Show => "show".to_string(),
+                Job::Probe => "probe".to_string(),
+                Job::Check => "check".to_string(),
+                Job::Replay(keys) => format!("replay {} keys", keys.len()),
+            };
             let toggled = matches!(job, Job::Toggle);
+            let target = match &job {
+                Job::Set(ime) => Some(*ime),
+                _ => None,
+            };
             let check = matches!(job, Job::Check);
             let (action, force) = match job {
                 Job::Set(ime) => (Some(engine.set(ime)), true),
@@ -256,7 +278,25 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 post(WM_DRAIN);
             }
             let error = action.and_then(Result::err).map(|e| format!("{e:#}"));
-            if force {
+            if let Some(target) = target {
+                // A window can take a while to follow a switch, or miss the request. Wait until the
+                // input method is the one asked for, ask again once, and only then read the state,
+                // so that the HUD shows what is in effect and not what was before. Give up when
+                // another window comes to the front, and never wait less than a plain settle, since
+                // the mode of Microsoft Pinyin shows up on the taskbar later than the switch itself.
+                let started = Instant::now();
+                let window = engine.foreground();
+                for step in 0..SWITCH_STEPS {
+                    if engine.ime() == target || engine.foreground() != window {
+                        break;
+                    }
+                    if step == SWITCH_RETRY_AT {
+                        let _ = engine.set(target);
+                    }
+                    thread::sleep(SWITCH_STEP);
+                }
+                thread::sleep(SETTLE.saturating_sub(started.elapsed()));
+            } else if force {
                 // Let the input method apply the change before reading it back.
                 thread::sleep(SETTLE);
             }
@@ -266,6 +306,14 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
             } else {
                 (true, None)
             };
+            if force {
+                debug_log(|| {
+                    format!(
+                        "job {label} window={} error={error:?} snapshot={snapshot:?}",
+                        uia::foreground_class()
+                    )
+                });
+            }
             if check {
                 debug_log(|| {
                     format!(
@@ -295,6 +343,30 @@ fn find_running() -> Option<HWND> {
 /// Whether a resident instance is running.
 pub fn is_running() -> bool {
     find_running().is_some()
+}
+
+/// The name of the window message that asks a running instance whether its debug log is on.
+const DEBUG_QUERY: PCWSTR = w!("imetap_debug_query");
+
+/// Asks the running instance whether it writes the debug log, which depends on the environment it
+/// was started in. `None` when none runs or it does not answer.
+pub fn running_debug_log() -> Option<bool> {
+    let hwnd = find_running()?;
+    let mut answer = 0usize;
+    // SAFETY: registers a window message by name and sends it to a window of another process with
+    // a timeout, so that a hung instance cannot block the caller.
+    let sent = unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            RegisterWindowMessageW(DEBUG_QUERY),
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            500,
+            Some(&mut answer),
+        )
+    };
+    (sent.0 != 0).then_some(answer != 0)
 }
 
 /// Asks the running instance to quit. Returns false if none was running.
@@ -852,6 +924,9 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message != 0 && message == DEBUG_QUERY_MESSAGE.with(Cell::get) {
+        return LRESULT(debug_log_enabled() as isize);
+    }
     // At login this tool may start before the taskbar exists. The icon is added again when it appears.
     if message != 0 && message == TASKBAR_CREATED.with(Cell::get) {
         let last = APP.with(|a| a.borrow().as_ref().and_then(|app| app.last));

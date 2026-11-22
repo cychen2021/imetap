@@ -148,6 +148,9 @@ pub fn main(console: bool) -> Result<()> {
                     "does not start at login"
                 }
             );
+            if let Some(debug) = platform::debug_status() {
+                println!("debug:   {debug}");
+            }
             let engine = platform::engine();
             println!("input:   {}", engine.snapshot());
             if verbose {
@@ -237,7 +240,7 @@ mod platform {
 
     use crate::config::Config;
     use crate::daemon_exe;
-    use crate::win::{Engine, app, autostart, init_com};
+    use crate::win::{Engine, app, autostart, debug_log_path, init_com};
 
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -278,6 +281,15 @@ mod platform {
         autostart::is_enabled()
     }
 
+    /// Whether the running instance writes the debug log, which `IMETAP_DEBUG` turns on at its start.
+    pub fn debug_status() -> Option<String> {
+        Some(match app::running_debug_log() {
+            None => "off (not running)".to_string(),
+            Some(true) => format!("on, logging to {}", debug_log_path().display()),
+            Some(false) => "off (set IMETAP_DEBUG=1 before starting to log)".to_string(),
+        })
+    }
+
     pub fn set_autostart(enabled: bool) -> Result<()> {
         if enabled && !autostart::set(true)? {
             eprintln!(
@@ -313,6 +325,11 @@ mod platform {
     pub use crate::mac::{Engine, autostart_enabled, is_running, open, set_autostart, start, stop};
 
     pub fn attach_console() {}
+
+    /// There is no debug log on macOS.
+    pub fn debug_status() -> Option<String> {
+        None
+    }
 
     pub fn engine() -> Engine {
         Engine::new()
@@ -350,6 +367,9 @@ mod platform {
     }
 
     pub fn attach_console() {}
+    pub fn debug_status() -> Option<String> {
+        None
+    }
     pub fn engine() -> Engine {
         Engine
     }

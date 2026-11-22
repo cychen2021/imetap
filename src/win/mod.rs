@@ -19,18 +19,32 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 
 use crate::state::{Ime, Snapshot};
 
-/// Appends a line to `%TEMP%\imetap-debug.log` when the environment variable `IMETAP_DEBUG` is set.
-/// The message is only built then.
-pub fn debug_log(message: impl FnOnce() -> String) {
-    use std::io::Write;
+/// Whether the environment variable `IMETAP_DEBUG` was set when this process asked first.
+pub fn debug_log_enabled() -> bool {
     use std::sync::OnceLock;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    if !*ENABLED.get_or_init(|| std::env::var_os("IMETAP_DEBUG").is_some()) {
+    *ENABLED.get_or_init(|| std::env::var_os("IMETAP_DEBUG").is_some())
+}
+
+/// Where the debug log is written.
+pub fn debug_log_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("imetap-debug.log")
+}
+
+/// Appends a line to the debug log when `IMETAP_DEBUG` is set. The message is only built then.
+pub fn debug_log(message: impl FnOnce() -> String) {
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    if !debug_log_enabled() {
         return;
     }
-    let path = std::env::temp_dir().join("imetap-debug.log");
+    let path = debug_log_path();
+    // Start over once it gets big, so that leaving the switch on cannot fill the disk.
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 2_000_000) {
+        let _ = std::fs::remove_file(&path);
+    }
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64());
@@ -81,26 +95,31 @@ impl Engine {
     /// Whether keyboard focus is in a text field (`true` when that cannot be told), and what UI
     /// Automation reported for it.
     ///
-    /// A Chromium window (Chrome, Edge, any Electron app) that shows only a bare window has its
-    /// accessibility tree not ready yet, since Chromium builds it on the first request. Ask again a
-    /// few times. If it is still not there, it does not count as a text field, and the next focus
-    /// change, key press or click checks again. Other bare windows are custom-drawn apps, which
-    /// tell nothing and count as text fields.
+    /// A bare window has three meanings. A Windows shell window (taskbar, Start) is not a text field.
+    /// A Chromium window (Chrome, Edge, Electron, and WebView2 apps like the new Outlook) has its
+    /// accessibility tree not ready yet, since Chromium builds it on the first request, so ask again
+    /// a few times, and if it is still not there, it does not count as a text field. The next focus
+    /// change, key press or click checks again. Any other bare window is a custom-drawn app, which
+    /// tells nothing and counts as a text field.
     pub fn focus_in_text_field(&self) -> (bool, Option<uia::FocusInfo>) {
         let read = || self.tray.as_ref().and_then(uia::TrayReader::focus_info);
         let bare = |info: &Option<uia::FocusInfo>| info.is_some_and(|i| i.is_bare_window());
-        let chromium = uia::foreground_is_chromium();
+        let class = uia::foreground_class();
+        let chromium = |info: &Option<uia::FocusInfo>| {
+            class.starts_with("Chrome_WidgetWin") || info.is_some_and(|i| i.chromium)
+        };
         let mut info = read();
-        if chromium {
-            for _ in 0..5 {
-                if !bare(&info) {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(100));
-                info = read();
-            }
+        if bare(&info) && uia::is_shell_class(&class) {
+            return (false, info);
         }
-        let text = if chromium && bare(&info) {
+        for _ in 0..5 {
+            if !(bare(&info) && chromium(&info)) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+            info = read();
+        }
+        let text = if bare(&info) && chromium(&info) {
             false
         } else {
             info.is_none_or(uia::is_text_field)
@@ -120,6 +139,16 @@ impl Engine {
             focus,
             self.focus_in_text_field().0
         )
+    }
+
+    /// The handle of the foreground window.
+    pub fn foreground(&self) -> isize {
+        ime::foreground()
+    }
+
+    /// Which input method the foreground window is using, without the mode.
+    pub fn ime(&self) -> Ime {
+        ime::current()
     }
 
     /// Switches to another input method.
