@@ -34,11 +34,11 @@ use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, ShellExecuteW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CallNextHookEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
-    DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, FindWindowW, GetCursorPos,
-    GetMessageW, HHOOK, HICON, ICONINFO, KBDLLHOOKSTRUCT, KillTimer, MF_CHECKED, MF_SEPARATOR,
-    MF_STRING, MSG, MSLLHOOKSTRUCT, PostMessageW, PostQuitMessage, RegisterClassExW,
-    RegisterWindowMessageW, SMTO_ABORTIFHUNG, SW_SHOWNORMAL, SendMessageTimeoutW,
+    AppendMenuW, CallNextHookEx, CreateIconFromResourceEx, CreateIconIndirect, CreatePopupMenu,
+    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, FindWindowW,
+    GetCursorPos, GetMessageW, HHOOK, HICON, ICONINFO, KBDLLHOOKSTRUCT, KillTimer, LR_DEFAULTCOLOR,
+    MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, MSLLHOOKSTRUCT, PostMessageW, PostQuitMessage,
+    RegisterClassExW, RegisterWindowMessageW, SMTO_ABORTIFHUNG, SW_SHOWNORMAL, SendMessageTimeoutW,
     SetForegroundWindow, SetTimer, SetWindowsHookExW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
     WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
@@ -752,8 +752,21 @@ fn add_tray(hwnd: HWND) {
 
 fn update_tray(hwnd: HWND, snapshot: Option<Snapshot>, add: bool) {
     // The tooltip is just the tool name: the state is already on the icon and in the input bar.
-    let glyph = snapshot.map_or("?", |s| s.glyph());
-    let icon = make_icon(glyph, snapshot);
+    // The HUD says "EN", but the tray icon is small, so it shows a single "E" like the macOS one.
+    let follow = APP.with(|a| {
+        a.borrow()
+            .as_ref()
+            .is_none_or(|app| app.config.tray.enable_lang_indicator)
+    });
+    let icon = if follow {
+        let glyph = match snapshot.map_or("?", |s| s.glyph()) {
+            "EN" => "E",
+            other => other,
+        };
+        make_icon(glyph, snapshot)
+    } else {
+        logo_icon()
+    };
     let data = tray_data(hwnd, icon, "imetap");
     // SAFETY: `data` is fully initialised for the call.
     unsafe {
@@ -786,10 +799,19 @@ fn remove_tray(hwnd: HWND) {
 fn icon_color(snapshot: Option<Snapshot>) -> COLORREF {
     let rgb = |r: u32, g: u32, b: u32| COLORREF(r | g << 8 | b << 16);
     match snapshot {
-        Some(s) if s.ime == Ime::Us => rgb(70, 74, 82),
         Some(s) if s.chinese == Some(true) => rgb(196, 48, 43),
         Some(_) => rgb(37, 99, 170),
         None => rgb(90, 90, 90),
+    }
+}
+
+/// The imetap logo as a 32 x 32 icon, for `tray.enable_lang_indicator = false`.
+fn logo_icon() -> HICON {
+    const LOGO: &[u8] = include_bytes!("../../assets/tray.png");
+    // SAFETY: the bytes are a PNG icon image that lives for the whole program. The icon owns a copy.
+    unsafe {
+        CreateIconFromResourceEx(LOGO, true, 0x0003_0000, 32, 32, LR_DEFAULTCOLOR)
+            .unwrap_or_default()
     }
 }
 
@@ -818,7 +840,11 @@ fn make_icon(glyph: &str, snapshot: Option<Snapshot>) -> HICON {
             mem,
             glyph,
             rect,
-            if glyph.is_ascii() { 17 } else { 26 },
+            match glyph {
+                "E" => 26,
+                _ if glyph.is_ascii() => 17,
+                _ => 26,
+            },
             700,
         );
         SelectObject(mem, old);
@@ -1068,5 +1094,18 @@ unsafe extern "system" fn window_proc(
         }
         // SAFETY: forwarding an unhandled message with its original arguments.
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_logo_loads_as_an_icon() {
+        let icon = logo_icon();
+        assert!(!icon.is_invalid());
+        // SAFETY: the handle was created above and is not used afterwards.
+        unsafe { DestroyIcon(icon).ok() };
     }
 }

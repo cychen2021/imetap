@@ -302,6 +302,22 @@ impl Default for ReminderConfig {
     }
 }
 
+/// `[tray]`: the tray icon on Windows and the menu bar icon on macOS.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TrayConfig {
+    /// Whether the icon follows the language: "中" or "E". When false it always shows the logo.
+    pub enable_lang_indicator: bool,
+}
+
+impl Default for TrayConfig {
+    fn default() -> Self {
+        Self {
+            enable_lang_indicator: true,
+        }
+    }
+}
+
 /// The whole file.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -309,6 +325,7 @@ pub struct Config {
     pub tap: TapConfig,
     pub hotkeys: HotkeyConfig,
     pub hud: HudConfig,
+    pub tray: TrayConfig,
     pub reminder: ReminderConfig,
     /// The hidden Mingkuai support. It is not in `config.example.toml`.
     #[serde(rename = "mingkuai-integrate")]
@@ -590,6 +607,18 @@ mod tests {
         assert_eq!(style.label, "明快");
         assert!(Config::parse("[mingkuai-integrate]\nlabel = \"\"\n").is_err());
         assert!(Config::parse("[mingkuai-integrate]\nunknown = 1\n").is_err());
+    }
+
+    #[test]
+    fn the_tray_language_indicator_is_on_by_default() {
+        assert!(Config::default().tray.enable_lang_indicator);
+        assert!(
+            !Config::parse("[tray]\nenable_lang_indicator = false\n")
+                .unwrap()
+                .tray
+                .enable_lang_indicator
+        );
+        assert!(Config::parse("[tray]\nunknown = 1\n").is_err());
     }
 
     #[test]

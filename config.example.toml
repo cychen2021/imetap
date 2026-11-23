@@ -61,6 +61,11 @@ doubao = "豆"
 shuangpin = "双"
 other = "其"
 
+[tray]
+# The tray icon (the menu bar icon on macOS) shows "中" or "E" by the current language. When false it
+# always shows the imetap logo.
+enable_lang_indicator = true
+
 [reminder]
 # Show the HUD again when the input method may have been forgotten.
 enabled = false
