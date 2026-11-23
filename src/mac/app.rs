@@ -14,7 +14,7 @@ use anyhow::Result;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
-use objc2::{MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSColor,
     NSCompositingOperation, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
@@ -23,7 +23,7 @@ use objc2_app_kit::{
     NSWindowStyleMask, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSAttributedStringKey, NSDictionary, NSNotification, NSObject,
+    MainThreadMarker, NSAttributedStringKey, NSData, NSDictionary, NSNotification, NSObject,
     NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, ns_string,
 };
 
@@ -532,7 +532,7 @@ fn set_last(state: &mut State, snapshot: Snapshot) {
         && state.last.map(is_english) != Some(english)
         && let Some(button) = state.status_item.button(state.mtm)
     {
-        button.setImage(Some(&status_image(Some(english))));
+        button.setImage(Some(&status_image(english)));
     }
     state.last = Some(snapshot);
 }
@@ -725,47 +725,38 @@ fn observe_changes() {
 
 // ---- status item -------------------------------------------------------------------------------
 
-/// The menu bar icon. With a language it is "中" or "E" knocked out of a rounded square, like the
-/// Windows tray icon. Without one (`tray.enable_lang_indicator = false`) it is the logo in one
-/// colour: a pill with "中" and "E" knocked out of its two halves. Both are template images, so
-/// macOS tints them for light and dark menu bars. The language shows only Chinese or English: the
-/// system input menu shows the input method, but not the mode of an input method such as Mingkuai.
-fn status_image(english: Option<bool>) -> Retained<NSImage> {
-    const HEIGHT: f64 = 18.0;
-    let width = if english.is_some() { 18.0 } else { 26.0 };
+/// The menu bar icon for a language: "中" or "E" knocked out of a rounded square, like the Windows
+/// tray icon. It is a template image, so macOS tints it for light and dark menu bars. It shows
+/// only Chinese or English: the system input menu shows the input method, but not the mode of an
+/// input method such as Mingkuai.
+fn status_image(english: bool) -> Retained<NSImage> {
+    const SIZE: f64 = 18.0;
     let draw = RcBlock::new(move |_: NSRect| -> Bool {
+        let square = NSRect::new(NSPoint::new(1.0, 1.0), NSSize::new(SIZE - 2.0, SIZE - 2.0));
         NSColor::blackColor().setFill();
-        match english {
-            Some(english) => {
-                let square = NSRect::new(NSPoint::new(1.0, 1.0), NSSize::new(16.0, 16.0));
-                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(square, 4.0, 4.0).fill();
-                knock_out(
-                    if english {
-                        ns_string!("E")
-                    } else {
-                        ns_string!("中")
-                    },
-                    NSPoint::new(9.0, 9.0),
-                    12.5,
-                );
-            }
-            None => {
-                let pill = NSRect::new(NSPoint::new(1.0, 3.0), NSSize::new(24.0, 12.0));
-                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(pill, 6.0, 6.0).fill();
-                // The split between the two halves.
-                if let Some(context) = NSGraphicsContext::currentContext() {
-                    context.setCompositingOperation(NSCompositingOperation::DestinationOut);
-                }
-                let split = NSRect::new(NSPoint::new(12.5, 3.0), NSSize::new(1.0, 12.0));
-                NSBezierPath::bezierPathWithRect(split).fill();
-                knock_out(ns_string!("中"), NSPoint::new(7.0, 9.0), 9.0);
-                knock_out(ns_string!("E"), NSPoint::new(19.0, 9.0), 9.0);
-            }
-        }
+        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(square, 4.0, 4.0).fill();
+        let text = if english {
+            ns_string!("E")
+        } else {
+            ns_string!("中")
+        };
+        knock_out(text, NSPoint::new(SIZE / 2.0, SIZE / 2.0), 12.5);
         Bool::YES
     });
     let image =
-        NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(width, HEIGHT), false, &draw);
+        NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(SIZE, SIZE), false, &draw);
+    image.setTemplate(true);
+    image
+}
+
+/// The menu bar icon for `tray.enable_lang_indicator = false`: the logo drawn for the menu bar
+/// (`assets/mac/menubar.svg`, an outlined pill), as a template image at 2x.
+fn logo_image() -> Retained<NSImage> {
+    const LOGO: &[u8] = include_bytes!("../../assets/mac/menubar.png");
+    let data = NSData::with_bytes(LOGO);
+    let image = NSImage::initWithData(NSImage::alloc(), &data)
+        .expect("the embedded menu bar logo is a valid PNG");
+    image.setSize(NSSize::new(26.0, 18.0));
     image.setTemplate(true);
     image
 }
@@ -795,7 +786,12 @@ fn knock_out(text: &NSString, center: NSPoint, font_size: f64) {
 fn make_status_item(mtm: MainThreadMarker, lang_indicator: bool) -> Retained<NSStatusItem> {
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
     if let Some(button) = item.button(mtm) {
-        button.setImage(Some(&status_image(lang_indicator.then_some(false))));
+        let image = if lang_indicator {
+            status_image(false)
+        } else {
+            logo_image()
+        };
+        button.setImage(Some(&image));
         button.setToolTip(Some(ns_string!("imetap")));
     }
     let target: Retained<MenuTarget> = unsafe { msg_send![mtm.alloc::<MenuTarget>(), init] };

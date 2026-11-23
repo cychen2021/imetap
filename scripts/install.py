@@ -3,19 +3,22 @@
 # requires-python = ">=3.11"
 # dependencies = ["typer>=0.12", "rich>=13"]
 # ///
-"""Installs imetap with cargo, and on macOS signs it with a stable self-signed certificate.
+"""Installs imetap with cargo. On macOS it also builds ~/Applications/imetap.app and signs it.
 
 An ad-hoc signed binary is identified by its hash, so every `cargo install` looks like a new app
-to macOS and loses the Accessibility permission. Signed with a fixed certificate and identifier,
-the binary keeps the permission across reinstalls.
+to macOS and loses the Accessibility permission. The app bundle, signed with a fixed certificate
+and identifier, keeps the permission across reinstalls and has the imetap icon. `imetap start` and
+`imetap autostart` use the bundle's executable when it exists.
 
 Usage: scripts/install.py [--no-install] [--cert NAME]
 """
 
+import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import Annotated
 
@@ -25,6 +28,7 @@ from rich.panel import Panel
 
 ROOT = Path(__file__).resolve().parent.parent
 IDENTIFIER = "io.github.cychen2021.imetap"
+APP = Path.home() / "Applications/imetap.app"
 KEYCHAIN = Path.home() / "Library/Keychains/login.keychain-db"
 console = Console()
 
@@ -44,7 +48,7 @@ extendedKeyUsage = critical, codeSigning
 
 def main(
     no_install: Annotated[
-        bool, typer.Option("--no-install", help="Only sign the installed binary (macOS).")
+        bool, typer.Option("--no-install", help="Only rebuild and sign the app bundle from the installed binary (macOS).")
     ] = False,
     cert: Annotated[
         str, typer.Option(envvar="IMETAP_CERT", help="Name of the signing certificate (macOS).")
@@ -65,18 +69,21 @@ def main(
 
     binary = installed_binary()
     if mac:
-        sign(binary, cert)
+        binary = make_bundle(binary)
+        sign(APP, cert)
     if was_running or (mac and is_running()):
         run([str(binary), "restart" if mac else "start"], check=False)
-    console.print(f"[bold green]Installed[/] {binary}")
+    console.print(f"[bold green]Installed[/] {APP if mac else binary}")
     if first_cert:
         console.print(
             Panel(
                 "The certificate was just created, so the Accessibility entry granted to the old "
                 "ad-hoc signed imetap no longer matches. In System Settings > Privacy & Security > "
                 'Accessibility, remove the old imetap entry with "-", then grant access when '
-                f'imetap asks (or add {binary} with "+").\n\nYou will not need to do this again: '
-                "later runs reuse the same certificate, so the permission survives reinstalls.",
+                f'imetap asks (or add {APP} with "+").\n\nYou will not need to do this again: '
+                "later runs reuse the same certificate, so the permission survives reinstalls.\n\n"
+                "If you enabled autostart before, run `imetap autostart enable` again: the login "
+                "entry should point at the app.",
                 title="One-time step",
                 border_style="yellow",
             )
@@ -125,6 +132,33 @@ def stop_running() -> bool:
     return False
 
 
+def make_bundle(binary: Path) -> Path:
+    """Builds ~/Applications/imetap.app around the installed binary. Returns its executable."""
+    version = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
+    console.print(f"Building {APP}...")
+    if APP.exists():
+        shutil.rmtree(APP)
+    (APP / "Contents/MacOS").mkdir(parents=True)
+    (APP / "Contents/Resources").mkdir()
+    shutil.copy2(binary, APP / "Contents/MacOS/imetap")
+    shutil.copy2(ROOT / "assets/mac/icon.icns", APP / "Contents/Resources/icon.icns")
+    info = {
+        "CFBundleIdentifier": IDENTIFIER,
+        "CFBundleName": "imetap",
+        "CFBundleDisplayName": "imetap",
+        "CFBundleExecutable": "imetap",
+        "CFBundleIconFile": "icon",
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": version,
+        "CFBundleVersion": version,
+        "NSHighResolutionCapable": True,
+        # A menu bar tool: no Dock icon and no application menu.
+        "LSUIElement": True,
+    }
+    (APP / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
+    return APP / "Contents/MacOS/imetap"
+
+
 def has_certificate(name: str) -> bool:
     """Whether the login keychain has the certificate."""
     result = subprocess.run(
@@ -160,12 +194,12 @@ def create_certificate(name: str) -> None:
         )
 
 
-def sign(binary: Path, cert: str) -> None:
-    """Signs the binary with the certificate and a fixed identifier."""
-    console.print(f"Signing {binary}...")
-    run(["codesign", "--force", "--sign", cert, "--identifier", IDENTIFIER, str(binary)])
+def sign(target: Path, cert: str) -> None:
+    """Signs the app bundle with the certificate and a fixed identifier."""
+    console.print(f"Signing {target}...")
+    run(["codesign", "--force", "--sign", cert, "--identifier", IDENTIFIER, str(target)])
     shown = subprocess.run(
-        ["codesign", "--display", "--requirements", "-", str(binary)],
+        ["codesign", "--display", "--requirements", "-", str(target)],
         capture_output=True,
         text=True,
     )
