@@ -19,7 +19,7 @@ Windows is implemented and tested by hand. macOS (`src/mac/`) is a port of `ime.
 ```bash
 cargo build                                  # build
 uv run scripts/build.py [--check]            # release build, lists the binaries (--check: fmt, clippy, tests first)
-uv run scripts/install.py                    # cargo install, plus signing on macOS (replaces install-mac.sh)
+uv run scripts/install.py                    # cargo install, plus the signed app bundle on macOS
 cargo run -- <args>                          # run a subcommand, e.g. `cargo run -- status -v`
 cargo test                                   # all tests
 cargo test <name_substring>                  # tests whose name contains the substring
@@ -54,7 +54,7 @@ Windows (`src/win/`), everything event-driven with no polling:
 - `hud.rs`: a layered, topmost, no-activate, click-through window on the monitor of the foreground window (primary if none), bottom centre, faded in and out by a 15 ms timer that asks `fade.rs` for the brightness (`hud.fade_in_ms`, `hud.duration_ms`, `hud.fade_out_ms`). Showing again while visible carries on from the current brightness. macOS steps the same curve with one-shot run loop timers, one chain at a time.
 - `autostart.rs`: the `HKCU\...\Run` value.
 
-macOS (`src/mac/`), a port of `ime.lua`: the double-tap swaps the US source and the last-used Chinese source (persisted next to the config). There is no mode to read, because Doubao and Shuangpin are separate input sources. A Quartz event tap (needs Accessibility) handles the double-tap and the hotkeys, and a second, listen-only tap watches mouse movement for the reminder. The HUD is an `NSPanel`, the tray an `NSStatusItem` whose template icon shows "中", or "E" while the state is English (the US source or an English mode, `app::set_last`). Focus and input-source changes come from `NSWorkspace` and the distributed notification `com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged`. The login item is a LaunchAgent plist.
+macOS (`src/mac/`), a port of `ime.lua`: the double-tap swaps the US source and the last-used Chinese source (persisted next to the config). There is no mode to read, because Doubao and Shuangpin are separate input sources. A Quartz event tap (needs Accessibility) handles the double-tap and the hotkeys, and a second, listen-only tap watches mouse movement for the reminder. The HUD is an `NSPanel`, the tray an `NSStatusItem` whose template icon shows "中", or "E" while the state is English (the US source or an English mode, `app::set_last`). Focus and input-source changes come from `NSWorkspace` and the distributed notification `com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged`. The login item is a LaunchAgent plist. `scripts/install.py` builds `~/Applications/imetap.app` (`LSUIElement`, the icon from `assets/mac/`) around the installed binary and signs the bundle with a self-signed certificate, and `daemon_exe()` prefers the bundle's executable (`MAC_BUNDLE_EXE`), because the Accessibility permission belongs to the bundle. `assets/mac/` has the macOS-specific artwork: `icon.svg` (the app icon, on the macOS grid) and `menubar.svg` (an outlined pill drawn as a template image, shown when `tray.enable_lang_indicator` is false). `assets/` has the Windows ones: `logo.svg`, `tray.png`, `icon.ico`.
 
 All `unsafe` FFI is confined to `src/win/` and `src/mac/ffi.rs`, each call with a `SAFETY` comment.
 
