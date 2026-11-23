@@ -11,13 +11,16 @@ A small tray tool for Windows and macOS that makes switching between Chinese and
 
 ## Install
 
+Both platforms use the two [uv](https://docs.astral.sh/uv/) scripts in `scripts/`:
+
 ```bash
-cargo install --path .
+uv run scripts/build.py      # cargo build --release, then lists the binaries (--check runs fmt, clippy and the tests first)
+uv run scripts/install.py    # cargo install --path ., stopping and restarting a running imetap
 imetap start
 imetap autostart enable
 ```
 
-On macOS, install with `scripts/install-mac.sh` instead of `cargo install`. It signs the binary with a self-signed certificate (created in the login keychain on the first run), so the Accessibility permission survives reinstalls. An ad-hoc signed binary is identified by its hash and loses the permission on every rebuild. Only once, after the first run (when the certificate is created), remove the old imetap entry under System Settings > Privacy & Security > Accessibility and grant access again. Later runs reuse the certificate and keep the permission. `scripts/install-mac.sh --no-install` only re-signs the installed binary, e.g. after a plain `cargo install`.
+On macOS, `scripts/install.py` also signs the binary with a self-signed certificate (created in the login keychain on the first run), so the Accessibility permission survives reinstalls. An ad-hoc signed binary is identified by its hash and loses the permission on every rebuild. Only once, after the first run (when the certificate is created), remove the old imetap entry under System Settings > Privacy & Security > Accessibility and grant access again. Later runs reuse the certificate and keep the permission. `scripts/install.py --no-install` only re-signs the installed binary, e.g. after a plain `cargo install`.
 
 ## Usage
 

@@ -18,6 +18,8 @@ Windows is implemented and tested by hand. macOS (`src/mac/`) is a port of `ime.
 
 ```bash
 cargo build                                  # build
+uv run scripts/build.py [--check]            # release build, lists the binaries (--check: fmt, clippy, tests first)
+uv run scripts/install.py                    # cargo install, plus signing on macOS (replaces install-mac.sh)
 cargo run -- <args>                          # run a subcommand, e.g. `cargo run -- status -v`
 cargo test                                   # all tests
 cargo test <name_substring>                  # tests whose name contains the substring
