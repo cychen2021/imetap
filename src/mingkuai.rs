@@ -6,10 +6,10 @@
 //!
 //! ```text
 //! message : length u32 little-endian | that many bytes of JSON
-//! request : "GetMode"                       -> {"Mode":{"chinese":true}}
-//! request : {"SetMode":{"chinese":false}}   -> {"Mode":{"chinese":false}}
-//! request : "WatchMode"                     -> {"Mode":{...}} now and after each change
-//! error   : {"Error":{"message":"..."}}
+//! request : "get_mode"                       -> {"mode":{"chinese":true}}
+//! request : {"set_mode":{"chinese":false}}   -> {"mode":{"chinese":false}}
+//! request : "watch_mode"                     -> {"mode":{...}} now and after each change
+//! error   : {"error":{"message":"..."}}
 //! ```
 //!
 //! The mode is one mode for all applications. This module only builds and parses messages.
@@ -55,18 +55,18 @@ pub fn socket_path() -> Result<std::path::PathBuf> {
 
 /// A complete request asking for the Chinese/English mode.
 pub fn get_mode_request() -> Vec<u8> {
-    frame(br#""GetMode""#)
+    frame(br#""get_mode""#)
 }
 
 /// A complete request to get the mode now and after each change. The connection then takes no
 /// more requests.
 pub fn watch_mode_request() -> Vec<u8> {
-    frame(br#""WatchMode""#)
+    frame(br#""watch_mode""#)
 }
 
 /// A complete request setting the Chinese/English mode.
 pub fn set_mode_request(chinese: bool) -> Vec<u8> {
-    frame(format!(r#"{{"SetMode":{{"chinese":{chinese}}}}}"#).as_bytes())
+    frame(format!(r#"{{"set_mode":{{"chinese":{chinese}}}}}"#).as_bytes())
 }
 
 fn frame(json: &[u8]) -> Vec<u8> {
@@ -86,12 +86,13 @@ pub fn parse_length(prefix: [u8; LENGTH_LEN]) -> Result<usize> {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum Reply {
     Mode { chinese: bool },
     Error { message: String },
 }
 
-/// Decodes a reply to `GetMode` or `SetMode`: true for Chinese mode.
+/// Decodes a reply to `get_mode` or `set_mode`: true for Chinese mode.
 pub fn parse_mode_reply(body: &[u8]) -> Result<bool> {
     match serde_json::from_slice(body) {
         Ok(Reply::Mode { chinese }) => Ok(chinese),
@@ -109,10 +110,10 @@ mod tests {
 
     #[test]
     fn requests_are_framed_json() {
-        assert_eq!(get_mode_request(), b"\x09\0\0\0\"GetMode\"");
-        assert_eq!(&watch_mode_request()[4..], br#""WatchMode""#);
+        assert_eq!(get_mode_request(), b"\x0a\0\0\0\"get_mode\"");
+        assert_eq!(&watch_mode_request()[4..], br#""watch_mode""#);
         let set = set_mode_request(false);
-        assert_eq!(&set[4..], br#"{"SetMode":{"chinese":false}}"#);
+        assert_eq!(&set[4..], br#"{"set_mode":{"chinese":false}}"#);
         assert_eq!(
             parse_length(set[..4].try_into().unwrap()).unwrap(),
             set.len() - 4
@@ -121,10 +122,10 @@ mod tests {
 
     #[test]
     fn mode_replies_parse() {
-        assert!(parse_mode_reply(br#"{"Mode":{"chinese":true}}"#).unwrap());
-        assert!(!parse_mode_reply(br#"{"Mode":{"chinese":false}}"#).unwrap());
-        assert!(parse_mode_reply(br#"{"Error":{"message":"no"}}"#).is_err());
-        assert!(parse_mode_reply(br#""Done""#).is_err());
+        assert!(parse_mode_reply(br#"{"mode":{"chinese":true}}"#).unwrap());
+        assert!(!parse_mode_reply(br#"{"mode":{"chinese":false}}"#).unwrap());
+        assert!(parse_mode_reply(br#"{"error":{"message":"no"}}"#).is_err());
+        assert!(parse_mode_reply(br#""done""#).is_err());
     }
 
     #[test]
