@@ -42,6 +42,9 @@ On Windows, `imetap.exe` is a GUI-subsystem program, so its output does not reac
 `config.toml` lives in `$XDG_CONFIG_HOME/imetap/`, or the platform default (`%APPDATA%\imetap` on Windows, `~/Library/Application Support/imetap` on macOS). Every key is optional. `imetap config init` writes the defaults with comments, the same as [`config.example.toml`](config.example.toml). Restart with `imetap restart` after editing.
 
 ```toml
+# The input methods imetap handles: us, pinyin (Windows), doubao, shuangpin (macOS). One left out gets no hotkey and counts as unknown.
+enable = ["us", "pinyin", "doubao", "shuangpin"]
+
 [tap]
 enabled = true
 gap_ms = 500     # longest time between the two taps

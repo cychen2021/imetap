@@ -35,6 +35,9 @@ const LAUNCH_AGENT: &str = "io.github.cychen2021.imetap";
 
 /// The input source identifier of an input method.
 fn source_id(ime: Ime) -> Option<&'static str> {
+    if !ime.is_enabled() {
+        return None;
+    }
     match ime {
         Ime::Us => Some(SOURCE_US),
         Ime::Doubao => Some(SOURCE_DOUBAO),
@@ -45,6 +48,11 @@ fn source_id(ime: Ime) -> Option<&'static str> {
 }
 
 fn ime_of(source: &str) -> Ime {
+    let ime = known_ime_of(source);
+    if ime.is_enabled() { ime } else { Ime::Other }
+}
+
+fn known_ime_of(source: &str) -> Ime {
     match source {
         SOURCE_US => Ime::Us,
         SOURCE_DOUBAO => Ime::Doubao,

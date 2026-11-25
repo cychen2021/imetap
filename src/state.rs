@@ -4,8 +4,12 @@
 use std::fmt;
 use std::num::NonZeroU32;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use serde::Deserialize;
+
+/// The input methods that `enable` leaves on. All four by default.
+static ENABLED_MASK: AtomicU8 = AtomicU8::new(0b1111);
 
 /// The input methods the tool knows about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +50,34 @@ impl Ime {
             Ime::Mingkuai => "明快",
             Ime::Us | Ime::Other => self.name(),
         }
+    }
+
+    /// The bit of this input method in the enabled mask, 0 for those that cannot be disabled.
+    fn bit(self) -> u8 {
+        match self {
+            Ime::Us => 1,
+            Ime::Pinyin => 2,
+            Ime::Doubao => 4,
+            Ime::Shuangpin => 8,
+            Ime::Mingkuai | Ime::Other => 0,
+        }
+    }
+
+    /// Sets which of the input methods `us`, `pinyin`, `doubao` and `shuangpin` imetap handles, from
+    /// the top-level `enable` key of `config.toml`. The others count as unknown input methods.
+    pub fn set_enabled(list: &[Ime]) {
+        let mask = list.iter().fold(0, |m, ime| m | ime.bit());
+        ENABLED_MASK.store(mask, Ordering::Relaxed);
+    }
+
+    /// Whether `enable` can turn this input method on or off.
+    pub fn is_governed(self) -> bool {
+        self.bit() != 0
+    }
+
+    /// Whether imetap handles this input method. Mingkuai and `Other` are not governed by `enable`.
+    pub fn is_enabled(self) -> bool {
+        self.bit() == 0 || ENABLED_MASK.load(Ordering::Relaxed) & self.bit() != 0
     }
 
     /// Parses a command-line name (`us`, `pinyin`, `doubao`, `shuangpin`).

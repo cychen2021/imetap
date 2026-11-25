@@ -51,6 +51,9 @@ fn profile_mgr() -> Result<ITfInputProcessorProfileMgr> {
 /// Switches the input method. The US layout is requested from the foreground window. The Chinese
 /// IMEs are activated for the whole session.
 pub fn activate(ime: Ime) -> Result<()> {
+    if !ime.is_enabled() {
+        bail!("{} is not enabled in config.toml", ime.name());
+    }
     let (clsid, profile) = match ime {
         Ime::Us => {
             // ActivateProfile does not change the layout of the foreground window for plain
@@ -113,6 +116,11 @@ pub fn layout() -> usize {
 
 /// Which input method the foreground window is using.
 pub fn current() -> Ime {
+    let ime = detect();
+    if ime.is_enabled() { ime } else { Ime::Other }
+}
+
+fn detect() -> Ime {
     let lang = (layout() & 0xFFFF) as u16;
     if lang == 0x0409 {
         return Ime::Us;

@@ -93,6 +93,9 @@ pub fn main(console: bool) -> Result<()> {
     // config leaves it off here: `run` and `config check` report the error.
     if let Some(Ok(config)) = config::config_path().map(|path| Config::load(&path)) {
         mingkuai::set_enabled(config.mingkuai.enable);
+        if let Ok(list) = config.enabled_imes() {
+            Ime::set_enabled(&list);
+        }
     }
     let command = match cli.command {
         Some(command) => command,
@@ -149,6 +152,7 @@ pub fn main(console: bool) -> Result<()> {
         Command::Set { ime } => {
             let ime = Ime::parse(&ime)
                 .filter(|&i| i != Ime::Mingkuai || mingkuai::enabled())
+                .filter(|&i| i.is_enabled())
                 .ok_or_else(|| anyhow!("unknown input method `{ime}`"))?;
             platform::engine().set(ime)
         }

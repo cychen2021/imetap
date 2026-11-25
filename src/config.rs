@@ -9,7 +9,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 
 use crate::fade::Fade;
@@ -319,9 +319,12 @@ impl Default for TrayConfig {
 }
 
 /// The whole file.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// The input methods imetap handles: `us`, `pinyin`, `doubao`, `shuangpin`. The others count
+    /// as unknown input methods. Mingkuai is not governed by it.
+    pub enable: Vec<String>,
     pub tap: TapConfig,
     pub hotkeys: HotkeyConfig,
     pub hud: HudConfig,
@@ -330,6 +333,22 @@ pub struct Config {
     /// The hidden Mingkuai support. It is not in `config.example.toml`.
     #[serde(rename = "mingkuai-integrate")]
     pub mingkuai: MingkuaiConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            enable: ["us", "pinyin", "doubao", "shuangpin"]
+                .map(String::from)
+                .into(),
+            tap: TapConfig::default(),
+            hotkeys: HotkeyConfig::default(),
+            hud: HudConfig::default(),
+            tray: TrayConfig::default(),
+            reminder: ReminderConfig::default(),
+            mingkuai: MingkuaiConfig::default(),
+        }
+    }
 }
 
 /// `[mingkuai-integrate]`: the hidden Mingkuai support. Off by default.
@@ -375,8 +394,25 @@ impl Config {
         }
     }
 
+    /// The input methods named by `enable`.
+    pub fn enabled_imes(&self) -> Result<Vec<Ime>> {
+        self.enable
+            .iter()
+            .map(|name| {
+                Ime::parse(name)
+                    .filter(|&ime| ime.is_governed())
+                    .ok_or_else(|| {
+                        anyhow!("enable: unknown input method `{name}` (use us, pinyin, doubao, shuangpin)")
+                    })
+            })
+            .collect()
+    }
+
     /// The shortcut bound to an input method, `None` when disabled.
     pub fn shortcut(&self, ime: Ime) -> Result<Option<Shortcut>> {
+        if !self.enabled_imes()?.contains(&ime) && ime.is_governed() {
+            return Ok(None);
+        }
         let text = match ime {
             Ime::Us => &self.hotkeys.us,
             Ime::Pinyin | Ime::Shuangpin => &self.hotkeys.chinese,
@@ -417,6 +453,7 @@ impl Config {
         if self.reminder.idle_secs == 0 || self.reminder.dwell_secs == 0 {
             bail!("reminder.idle_secs and reminder.dwell_secs must be at least 1");
         }
+        self.enabled_imes()?;
         for ime in [Ime::Us, Ime::Pinyin, Ime::Doubao, Ime::Mingkuai] {
             self.shortcut(ime)?;
         }
@@ -586,6 +623,18 @@ mod tests {
         let c = Config::parse("[hotkeys]\nus = \"\"\n").unwrap();
         assert_eq!(c.shortcut(Ime::Us).unwrap(), None);
         assert!(c.shortcut(Ime::Doubao).unwrap().is_some());
+    }
+
+    #[test]
+    fn enable_picks_the_input_methods() {
+        let c = Config::default();
+        assert_eq!(c.enabled_imes().unwrap().len(), 4);
+        let c = Config::parse("enable = [\"us\", \"pinyin\"]\n").unwrap();
+        assert!(c.shortcut(Ime::Us).unwrap().is_some());
+        assert!(c.shortcut(Ime::Pinyin).unwrap().is_some());
+        assert_eq!(c.shortcut(Ime::Doubao).unwrap(), None);
+        assert!(Config::parse("enable = [\"nope\"]\n").is_err());
+        assert!(Config::parse("enable = [\"mingkuai\"]\n").is_err());
     }
 
     #[test]
