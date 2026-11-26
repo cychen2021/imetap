@@ -98,7 +98,8 @@ impl Engine {
             bail!("{} is not available on macOS", ime.name())
         };
         ffi::select_source(id)?;
-        if ime != Ime::Us {
+        // Mingkuai has its own mode, so it is never the source the double tap goes back to.
+        if !matches!(ime, Ime::Us | Ime::Mingkuai) {
             remember_chinese(ime);
         }
         Ok(())
@@ -134,8 +135,8 @@ fn last_chinese() -> Ime {
         .ok()
         .and_then(|d| fs::read_to_string(d.join("last_chinese")).ok())
         .and_then(|s| Ime::parse(s.trim()))
-        .filter(|i| matches!(i, Ime::Doubao | Ime::Shuangpin | Ime::Mingkuai))
-        .unwrap_or(Ime::Doubao)
+        .filter(|i| matches!(i, Ime::Doubao | Ime::Shuangpin))
+        .unwrap_or(Ime::Shuangpin)
 }
 
 fn remember_chinese(ime: Ime) {
@@ -287,6 +288,37 @@ pub fn set_autostart(enabled: bool, debug: bool) -> Result<()> {
         fs::remove_file(&path)?;
     }
     Ok(())
+}
+
+/// Points an existing login item at `daemon_exe()` when it names another executable, keeping its
+/// `--debug`. A login item written before the app bundle existed starts the ad-hoc signed binary,
+/// which has no Accessibility permission, so macOS asks again after every login.
+pub fn repair_autostart() -> Result<()> {
+    let path = launch_agent_path()?;
+    let Ok(old) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let exe = daemon_exe()?.display().to_string();
+    if !old.contains(&format!("<string>{exe}</string>")) {
+        set_autostart(true, old.contains("--debug"))?;
+    }
+    Ok(())
+}
+
+/// Replaces this process with the app bundle's executable when this is another copy of imetap and
+/// the bundle exists. Only the bundle holds the Accessibility permission. Returns only when there
+/// is nothing to hand over to, or the handover fails.
+pub fn exec_bundle() -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let current = std::env::current_exe()?;
+    let target = daemon_exe()?;
+    if fs::canonicalize(&current).ok() == fs::canonicalize(&target).ok() {
+        return Ok(());
+    }
+    let err = Command::new(&target)
+        .args(std::env::args_os().skip(1))
+        .exec();
+    Err(err).with_context(|| format!("cannot start {}", target.display()))
 }
 
 /// Opens a file with the default application.

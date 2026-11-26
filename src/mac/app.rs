@@ -28,7 +28,10 @@ use objc2_foundation::{
 };
 
 use super::ffi::{self, CFMachPortRef, CFRunLoopTimerRef, CGEventRef, CGEventTapProxy};
-use super::{Engine, autostart_enabled, claim_pid, mingkuai, open, set_autostart};
+use super::{
+    Engine, autostart_enabled, claim_pid, exec_bundle, mingkuai, open, repair_autostart,
+    set_autostart,
+};
 use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
 use crate::debug;
 use crate::fade::Fade;
@@ -139,6 +142,12 @@ thread_local! {
 
 /// Runs the tool until the user quits from the status item menu.
 pub fn run(config: Config) -> Result<()> {
+    if let Err(e) = exec_bundle() {
+        debug::log(|| format!("{e:#}"));
+    }
+    if let Err(e) = repair_autostart() {
+        debug::log(|| format!("cannot repair the login item: {e:#}"));
+    }
     claim_pid()?;
     let mtm = MainThreadMarker::new().expect("run must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
