@@ -15,31 +15,35 @@ Both platforms use the two [uv](https://docs.astral.sh/uv/) scripts in `scripts/
 
 ```bash
 uv run scripts/build.py      # cargo build --release, then lists the binaries (--check runs fmt, clippy and the tests first)
-uv run scripts/install.py    # cargo install --path ., stopping and restarting a running imetap
-imetap start
+uv run scripts/install.py    # cargo install --path ., stopping and restarting a running imetapd
+imetap daemon start
 imetap autostart enable
 ```
 
-On macOS, `scripts/install.py` also builds `~/Applications/imetap.app` (with the imetap icon, and no Dock icon) around the binary and signs it with a self-signed certificate (created in the login keychain on the first run), so the Accessibility permission survives reinstalls. `imetap start` and `imetap autostart` then use the app's executable, so run `imetap autostart enable` again after switching from a plain `cargo install`. An ad-hoc signed binary is identified by its hash and loses the permission on every rebuild. Only once, after the first run (when the certificate is created), remove the old imetap entry under System Settings > Privacy & Security > Accessibility and grant access again. Later runs reuse the certificate and keep the permission. `scripts/install.py --no-install` only rebuilds and re-signs the app from the installed binary, e.g. after a plain `cargo install`.
+On macOS, `scripts/install.py` also builds `~/Applications/imetap.app` (with the imetap icon, and no Dock icon) around the binary and signs it with a self-signed certificate (created in the login keychain on the first run), so the Accessibility permission survives reinstalls. `imetap daemon start` and `imetap autostart` then use the app's executable, so run `imetap autostart enable` again after switching from a plain `cargo install`. An ad-hoc signed binary is identified by its hash and loses the permission on every rebuild. Only once, after the first run (when the certificate is created), remove the old imetap entry under System Settings > Privacy & Security > Accessibility and grant access again. Later runs reuse the certificate and keep the permission. `scripts/install.py --no-install` only rebuilds and re-signs the app from the installed binary, e.g. after a plain `cargo install`.
 
 ## Usage
 
 ```
-imetap start | stop | restart      manage the background process
+imetap daemon run [--debug]        run the background process in this terminal
+imetap daemon start | stop         manage the background process
+imetap daemon reload               read the configuration file again
+imetap switch im us|pinyin|doubao  switch input method (shuangpin on macOS)
+imetap switch lang                 toggle Chinese/English
 imetap status [-v]                 process, login item and current input method
-imetap set us|pinyin|doubao        switch input method (shuangpin on macOS)
-imetap toggle                      toggle Chinese/English
 imetap autostart enable [--debug] | disable | status
-imetap config path|init|edit|check
+imetap paths                       configuration file, debug log and background process
+imetap init                        write the default configuration file
+imetap config edit [--gui]         open the configuration file in $EDITOR (or the default editor)
 ```
 
-On Windows, `imetap.exe` is a GUI-subsystem program, so its output does not reach pipes or scripts. `imetapctl` takes the same commands (except that it starts nothing by itself) as a console program with normal output. It launches and registers the `imetap` next to it. On macOS it is only a stub. Use `imetap` there.
+There are two programs. `imetap` is the command line. `imetapd` is the background process that `imetap daemon start` and the login entry launch (on Windows it has no console window).
 
-`imetap run` runs in the foreground. `imetap run --debug`, or `IMETAP_DEBUG=1` in its environment, makes it write a debug log to `imetap-debug.log` in the temporary directory (`imetap status` shows where). `imetap autostart enable --debug` makes the login entry start it that way. The tray menu offers "Run at login", "Open config file" and "Quit".
+`imetap daemon run` runs the background process in the foreground. `imetap daemon run --debug`, `imetapd --debug`, or `IMETAP_DEBUG=1` in its environment, makes it write a debug log to `imetap-debug.log` in the temporary directory (`imetap paths` and `imetap status` show where). `imetap autostart enable --debug` makes the login entry start it that way. The tray menu offers "Run at login", "Open config file" and "Quit".
 
 ## Configuration
 
-`config.toml` lives in `$XDG_CONFIG_HOME/imetap/`, or the platform default (`%APPDATA%\imetap` on Windows, `~/Library/Application Support/imetap` on macOS). Every key is optional. `imetap config init` writes the defaults with comments, the same as [`config.example.toml`](config.example.toml). Restart with `imetap restart` after editing.
+`config.toml` lives in `$XDG_CONFIG_HOME/imetap/`, or the platform default (`%APPDATA%\imetap` on Windows, `~/Library/Application Support/imetap` on macOS). Every key is optional. `imetap init` writes the defaults with comments, the same as [`config.example.toml`](config.example.toml). Run `imetap daemon reload` after editing.
 
 ```toml
 # The input methods imetap handles: us, pinyin (Windows), doubao, shuangpin (macOS). One left out gets no hotkey and counts as unknown.
