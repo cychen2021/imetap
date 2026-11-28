@@ -6,10 +6,13 @@
 pub mod app;
 pub mod autostart;
 pub mod doubao;
-pub mod hotkey;
+mod hooks;
+mod hotkeys;
 pub mod hud;
 pub mod ime;
+pub mod ime_hotkey;
 pub mod mingkuai;
+mod tray;
 pub mod uia;
 
 use std::thread;
@@ -125,7 +128,7 @@ impl Engine {
         match ime::current() {
             Ime::Doubao => doubao::set_chinese(!doubao::is_chinese()?),
             Ime::Mingkuai => mingkuai::set_chinese(!mingkuai::is_chinese()?),
-            Ime::Pinyin => hotkey::send_toggle(),
+            Ime::Pinyin => ime_hotkey::send_toggle(),
             _ => Ok(()),
         }
     }

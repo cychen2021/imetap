@@ -9,8 +9,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 use crate::config::{self, Config};
+use crate::daemon_path::daemon_exe;
 use crate::debug;
-use crate::mingkuai;
+use crate::protocol::mingkuai;
 use crate::state::Ime;
 
 /// Switch input methods, toggle Chinese/English and show a HUD for each change.
@@ -242,7 +243,7 @@ pub fn main() -> Result<()> {
                 Some(true) => println!("log:     {log}"),
                 _ => println!("log:     {log} (debug logging is not on: {HOW_TO_LOG})"),
             }
-            println!("daemon:  {}", crate::daemon_exe()?.display());
+            println!("daemon:  {}", daemon_exe()?.display());
             Ok(())
         }
         Command::Init => {
@@ -342,7 +343,7 @@ mod platform {
     use windows::core::{HSTRING, PCWSTR, w};
 
     use crate::config::Config;
-    use crate::daemon_exe;
+    use crate::daemon_path::daemon_exe;
     use crate::win::{Engine, app, autostart, init_com};
 
     const DETACHED_PROCESS: u32 = 0x0000_0008;

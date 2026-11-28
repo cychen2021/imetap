@@ -9,8 +9,16 @@
 //! so the double-tap switches that mode.
 
 pub mod app;
+pub mod autostart;
 mod ffi;
+mod hooks;
+mod hotkeys;
+mod hud;
+mod ime;
 pub(crate) mod mingkuai;
+mod tray;
+
+pub use autostart::{is_enabled as autostart_enabled, set as set_autostart};
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, Write};
@@ -20,47 +28,10 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::config_path;
-use crate::daemon_exe;
+use crate::daemon_path::daemon_exe;
 use crate::debug;
-use crate::mingkuai as mingkuai_wire;
 use crate::state::{Ime, Snapshot};
-
-const SOURCE_US: &str = "com.apple.keylayout.US";
-const SOURCE_DOUBAO: &str = "com.bytedance.inputmethod.doubaoime.pinyin";
-const SOURCE_SHUANGPIN: &str = "com.apple.inputmethod.SCIM.Shuangpin";
-/// The input mode of Mingkuai. Known only when `mingkuai-integrate.enable` is set.
-const SOURCE_MINGKUAI: &str = "org.mingkuai.inputmethod.Mingkuai.Pinyin";
-const LAUNCH_AGENT: &str = "io.github.cychen2021.imetap";
-
-/// The input source identifier of an input method.
-fn source_id(ime: Ime) -> Option<&'static str> {
-    if !ime.is_enabled() {
-        return None;
-    }
-    match ime {
-        Ime::Us => Some(SOURCE_US),
-        Ime::Doubao => Some(SOURCE_DOUBAO),
-        Ime::Shuangpin => Some(SOURCE_SHUANGPIN),
-        Ime::Mingkuai => mingkuai_wire::enabled().then_some(SOURCE_MINGKUAI),
-        Ime::Pinyin | Ime::Other => None,
-    }
-}
-
-fn ime_of(source: &str) -> Ime {
-    let ime = known_ime_of(source);
-    if ime.is_enabled() { ime } else { Ime::Other }
-}
-
-fn known_ime_of(source: &str) -> Ime {
-    match source {
-        SOURCE_US => Ime::Us,
-        SOURCE_DOUBAO => Ime::Doubao,
-        SOURCE_SHUANGPIN => Ime::Shuangpin,
-        SOURCE_MINGKUAI if mingkuai_wire::enabled() => Ime::Mingkuai,
-        _ => Ime::Other,
-    }
-}
+use ime::{ime_of, last_chinese, remember_chinese, source_id};
 
 /// Reads and changes the input source. Call it from the main thread only (TIS requires that).
 pub struct Engine;
@@ -118,30 +89,6 @@ impl Engine {
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-fn data_dir() -> Result<PathBuf> {
-    let config = config_path().context("no configuration directory")?;
-    Ok(config
-        .parent()
-        .context("no parent directory")?
-        .to_path_buf())
-}
-
-fn last_chinese() -> Ime {
-    data_dir()
-        .ok()
-        .and_then(|d| fs::read_to_string(d.join("last_chinese")).ok())
-        .and_then(|s| Ime::parse(s.trim()))
-        .filter(|i| matches!(i, Ime::Doubao | Ime::Shuangpin | Ime::Mingkuai))
-        .unwrap_or(Ime::Doubao)
-}
-
-fn remember_chinese(ime: Ime) {
-    if let Ok(dir) = data_dir() {
-        let _ = fs::create_dir_all(&dir);
-        let _ = fs::write(dir.join("last_chinese"), ime.name());
     }
 }
 
@@ -245,49 +192,6 @@ pub fn start() -> Result<()> {
     Ok(())
 }
 
-// ---- login item --------------------------------------------------------------------------------
-
-fn launch_agent_path() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home)
-        .join("Library/LaunchAgents")
-        .join(format!("{LAUNCH_AGENT}.plist")))
-}
-
-fn launch_agent_plist(exe: &str, debug: bool) -> String {
-    let debug = if debug {
-        "\t\t<string>--debug</string>\n"
-    } else {
-        ""
-    };
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n<dict>\n\
-         \t<key>Label</key>\n\t<string>{LAUNCH_AGENT}</string>\n\
-         \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{exe}</string>\n{debug}\t</array>\n\
-         \t<key>RunAtLoad</key>\n\t<true/>\n\
-         </dict>\n</plist>\n"
-    )
-}
-
-pub fn autostart_enabled() -> bool {
-    launch_agent_path().map(|p| p.exists()).unwrap_or(false)
-}
-
-/// Enables or disables starting at login. With `debug`, the started process writes the debug log.
-pub fn set_autostart(enabled: bool, debug: bool) -> Result<()> {
-    let path = launch_agent_path()?;
-    if enabled {
-        let exe = daemon_exe()?;
-        fs::create_dir_all(path.parent().context("no parent directory")?)?;
-        fs::write(&path, launch_agent_plist(&exe.display().to_string(), debug))?;
-    } else if path.exists() {
-        fs::remove_file(&path)?;
-    }
-    Ok(())
-}
-
 /// Opens a file with the default application.
 pub fn open(path: &std::path::Path) -> Result<()> {
     Command::new("open")
@@ -295,22 +199,4 @@ pub fn open(path: &std::path::Path) -> Result<()> {
         .status()
         .context("cannot run `open`")?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn launch_agent_passes_debug_only_when_asked() {
-        let plain = launch_agent_plist("/bin/imetapd", false);
-        assert!(plain.contains("<string>/bin/imetapd</string>\n\t</array>"));
-        assert!(!plain.contains("--debug"));
-        let debug = launch_agent_plist("/bin/imetapd", true);
-        assert!(
-            debug.contains(
-                "<string>/bin/imetapd</string>\n\t\t<string>--debug</string>\n\t</array>"
-            )
-        );
-    }
 }

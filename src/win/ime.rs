@@ -17,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{GUID, PCWSTR};
 
-use crate::mingkuai;
+use crate::protocol::mingkuai;
 use crate::state::Ime;
 
 /// Simplified Chinese (PRC), the language id the Chinese IMEs register under.

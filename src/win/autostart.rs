@@ -9,7 +9,7 @@ use std::env;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 
-use crate::daemon_exe;
+use crate::daemon_path::daemon_exe;
 
 use anyhow::Result;
 use windows::Win32::System::Registry::{

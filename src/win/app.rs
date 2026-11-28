@@ -1,4 +1,5 @@
-//! The resident tool: tray icon, hotkeys, Ctrl double-tap, window-change watching and the HUD.
+//! The resident tool: the main window, its message loop and the worker thread. The hooks, the
+//! hotkeys and the tray icon are in `hooks`, `hotkeys` and `tray`.
 //!
 //! Everything runs on one message-loop thread, driven by events. Nothing polls. Work that can
 //! block (UI Automation, the Doubao pipe, `SendInput`) goes to a worker thread, which reports back
@@ -6,69 +7,52 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::fs;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use windows::Win32::Foundation::{
-    COLORREF, ERROR_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT,
-    WPARAM,
-};
-use windows::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
-    DeleteObject, FillRect, GetDC, HGDIOBJ, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-    TRANSPARENT,
+    ERROR_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
-    UnregisterHotKey,
-};
-use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
-    Shell_NotifyIconW, ShellExecuteW,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CallNextHookEx, CreateIconFromResourceEx, CreateIconIndirect, CreatePopupMenu,
-    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, FindWindowW,
-    GetCursorPos, GetMessageW, HHOOK, HICON, ICONINFO, KBDLLHOOKSTRUCT, KillTimer, LR_DEFAULTCOLOR,
-    MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, MSLLHOOKSTRUCT, PostMessageW, PostQuitMessage,
-    RegisterClassExW, RegisterWindowMessageW, SMTO_ABORTIFHUNG, SW_SHOWNORMAL, SendMessageTimeoutW,
-    SetForegroundWindow, SetTimer, SetWindowsHookExW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WNDCLASSEXW, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, HICON, KillTimer,
+    MSG, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SMTO_ABORTIFHUNG,
+    SendMessageTimeoutW, SetTimer, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY,
+    WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPED,
 };
-use windows::core::{HSTRING, PCWSTR, w};
+use windows::core::{PCWSTR, w};
 
-use super::hud::{Hud, draw_text};
-use super::{Engine, autostart, hotkey, init_com, mingkuai, uia};
-use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
+use super::hooks::{
+    HOLD, HOLD_ENABLED, Hooks, MAIN, REMIND_PENDING, REMINDER, TAP, TAP_ENABLED, WAIT_FOR_TEXT,
+};
+use super::hotkeys::{HOTKEY_IMES, register_hotkeys, unregister_hotkeys};
+use super::hud::Hud;
+use super::{Engine, ime_hotkey, init_com, mingkuai, tray, uia};
+use crate::config::Config;
 use crate::debug;
-use crate::hold::{HeldKey, KeyHold};
+use crate::hold::HeldKey;
+use crate::protocol::mingkuai as mingkuai_wire;
 use crate::reminder::{Reminder, now_ms};
 use crate::state::{Ime, Snapshot, text_field_change};
-use crate::tap::{Key, Tap, TapDetector};
+use crate::tap::{Tap, TapDetector};
 
-const WM_TRAY: u32 = WM_APP + 1;
+pub(super) const WM_TRAY: u32 = WM_APP + 1;
 /// The worker finished a job and queued an outcome.
 const WM_OUTCOME: u32 = WM_APP + 2;
 /// Something happened that may have changed the input method (focus moved, IME notification).
-const WM_PASSIVE: u32 = WM_APP + 3;
+pub(super) const WM_PASSIVE: u32 = WM_APP + 3;
 /// The Ctrl double-tap was recognised.
-const WM_TAP: u32 = WM_APP + 4;
+pub(super) const WM_TAP: u32 = WM_APP + 4;
 /// A Ctrl double-tap waits for a possible third tap.
-const WM_TAP_PENDING: u32 = WM_APP + 6;
+pub(super) const WM_TAP_PENDING: u32 = WM_APP + 6;
 /// The Ctrl triple-tap was recognised.
-const WM_TRIPLE_TAP: u32 = WM_APP + 7;
+pub(super) const WM_TRIPLE_TAP: u32 = WM_APP + 7;
 /// The reminder wants the HUD shown.
-const WM_REMIND: u32 = WM_APP + 5;
+pub(super) const WM_REMIND: u32 = WM_APP + 5;
 
 /// Held-back keys may be replayed: the input method has applied the switch, or the hold is over.
 const WM_DRAIN: u32 = WM_APP + 8;
@@ -79,9 +63,7 @@ const TIMER_DEBOUNCE: usize = 1;
 /// Ends the wait for a third Ctrl tap.
 const TIMER_TRIPLE: usize = 2;
 /// Ends a key hold that was never drained, so a failure cannot leave the keyboard dead.
-const TIMER_HOLD: usize = 3;
-/// The longest keys are held back.
-const HOLD_TIMEOUT_MS: u32 = 1000;
+pub(super) const TIMER_HOLD: usize = 3;
 /// How long focus and IME notifications are allowed to settle before the state is read.
 const DEBOUNCE_MS: u32 = 250;
 /// How long the worker waits after an action before reading the state back.
@@ -94,18 +76,6 @@ const SWITCH_RETRY_AT: u32 = 6;
 /// How long the worker waits after a toggle before releasing the held-back keys, for the input
 /// method to apply it.
 const APPLY: Duration = Duration::from_millis(50);
-
-const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
-const EVENT_OBJECT_FOCUS: u32 = 0x8005;
-const EVENT_OBJECT_IME_CHANGE: u32 = 0x8029;
-const WINEVENT_OUTOFCONTEXT: u32 = 0;
-const LLKHF_EXTENDED: u32 = 0x01;
-const LLKHF_INJECTED: u32 = 0x10;
-const LLMHF_INJECTED: u32 = 0x01;
-
-const CMD_AUTOSTART: usize = 1;
-const CMD_CONFIG: usize = 2;
-const CMD_QUIT: usize = 3;
 
 /// Work for the worker thread.
 enum Job {
@@ -146,20 +116,6 @@ struct App {
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
-    // The hooks touch only these two, so a hook can never collide with a borrow of `APP`.
-    static TAP: RefCell<TapDetector> = RefCell::new(TapDetector::default());
-    static MAIN: Cell<isize> = const { Cell::new(0) };
-    static TAP_ENABLED: Cell<bool> = const { Cell::new(false) };
-    /// Keys typed while a double tap is applied. Touched by the keyboard hook, so kept out of `APP`.
-    static HOLD: RefCell<KeyHold> = RefCell::new(KeyHold::default());
-    static HOLD_ENABLED: Cell<bool> = const { Cell::new(false) };
-    /// `None` when the reminder is off. Touched by the hooks, so kept out of `APP` like `TAP`.
-    static REMINDER: RefCell<Option<Reminder>> = const { RefCell::new(None) };
-    /// The last check found focus outside a text field, so focus events, key presses and clicks
-    /// trigger a new one. The hooks read it, so it is kept out of `APP`.
-    static WAIT_FOR_TEXT: Cell<bool> = const { Cell::new(false) };
-    /// The next debounced read shows the HUD even if nothing changed.
-    static REMIND_PENDING: Cell<bool> = const { Cell::new(false) };
     /// The id of the `TaskbarCreated` broadcast, sent when Explorer (re)starts its taskbar.
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
     /// The id of the message `status` sends to ask whether the debug log is on.
@@ -186,7 +142,7 @@ pub fn run(config: Config) -> Result<()> {
     let (jobs, rx) = channel();
     let outcomes = Arc::new(Mutex::new(VecDeque::new()));
     spawn_worker(rx, outcomes.clone(), hwnd.0 as isize);
-    if crate::mingkuai::enabled() {
+    if mingkuai_wire::enabled() {
         spawn_mingkuai_watcher(hwnd.0 as isize);
     }
 
@@ -216,7 +172,7 @@ pub fn run(config: Config) -> Result<()> {
     TASKBAR_CREATED.with(|m| m.set(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) }));
     // SAFETY: registers a window message by name.
     DEBUG_QUERY_MESSAGE.with(|m| m.set(unsafe { RegisterWindowMessageW(DEBUG_QUERY) }));
-    add_tray(hwnd);
+    update_tray(hwnd, None, true);
     send(Job::Probe);
 
     // SAFETY: the standard message loop on the thread that owns the windows.
@@ -228,12 +184,9 @@ pub fn run(config: Config) -> Result<()> {
         }
     }
 
-    for id in registered {
-        // SAFETY: unregisters hotkeys registered above.
-        unsafe { UnregisterHotKey(Some(hwnd), id).ok() };
-    }
+    unregister_hotkeys(hwnd, registered);
     drop(hooks);
-    remove_tray(hwnd);
+    tray::remove(hwnd);
     Ok(())
 }
 
@@ -307,7 +260,7 @@ fn spawn_worker(rx: Receiver<Job>, outcomes: Arc<Mutex<VecDeque<Outcome>>>, main
                 Job::Show => (None, true),
                 Job::Probe | Job::Check | Job::MingkuaiMode => (None, false),
                 Job::Replay(keys) => {
-                    if let Err(e) = hotkey::replay(&keys) {
+                    if let Err(e) = ime_hotkey::replay(&keys) {
                         eprintln!("imetap: {e:#}");
                     }
                     post(WM_DRAIN);
@@ -450,113 +403,6 @@ fn create_window(instance: HINSTANCE) -> Result<HWND> {
     }
 }
 
-// ---- hooks -------------------------------------------------------------------------------------
-
-/// The low-level and WinEvent hooks. Removed on drop.
-struct Hooks {
-    keyboard: Option<HHOOK>,
-    mouse: Option<HHOOK>,
-    events: Vec<HWINEVENTHOOK>,
-}
-
-impl Hooks {
-    fn install(config: &Config, instance: HINSTANCE) -> Hooks {
-        // SAFETY: the hook procedures below are `extern "system"` functions that stay valid.
-        unsafe {
-            let (mut keyboard, mut mouse) = (None, None);
-            // The reminder needs to see input too.
-            if config.tap.enabled || config.reminder.enabled {
-                keyboard =
-                    SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(instance), 0).ok();
-                mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(instance), 0).ok();
-            }
-            let mut watched = vec![EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_IME_CHANGE];
-            if config.hud.wait_for_text_field {
-                watched.push(EVENT_OBJECT_FOCUS);
-            }
-            let events = watched
-                .into_iter()
-                .map(|event| {
-                    SetWinEventHook(
-                        event,
-                        event,
-                        None,
-                        Some(win_event_proc),
-                        0,
-                        0,
-                        WINEVENT_OUTOFCONTEXT,
-                    )
-                })
-                .collect();
-            Hooks {
-                keyboard,
-                mouse,
-                events,
-            }
-        }
-    }
-}
-
-impl Drop for Hooks {
-    fn drop(&mut self) {
-        // SAFETY: unhooks handles obtained in `install`.
-        unsafe {
-            for hook in [self.keyboard, self.mouse].into_iter().flatten() {
-                UnhookWindowsHookEx(hook).ok();
-            }
-            for hook in &self.events {
-                let _ = UnhookWinEvent(*hook);
-            }
-        }
-    }
-}
-
-/// Feeds key or mouse activity to the reminder. Cheap enough for every mouse move.
-fn note_activity() {
-    let resumed = REMINDER.with(|r| {
-        r.borrow_mut()
-            .as_mut()
-            .is_some_and(|r| r.activity(now_ms()))
-    });
-    if resumed {
-        post_main(WM_REMIND);
-    }
-}
-
-/// Hands a recognised tap to the window procedure.
-fn post_tap(tap: Tap) {
-    match tap {
-        Tap::None => {}
-        Tap::Pending => {
-            begin_hold();
-            post_main(WM_TAP_PENDING);
-        }
-        Tap::Double => {
-            begin_hold();
-            post_main(WM_TAP);
-        }
-        Tap::Triple => post_main(WM_TRIPLE_TAP),
-    }
-}
-
-/// Starts holding back keys until the double tap has taken effect.
-fn begin_hold() {
-    if !HOLD_ENABLED.with(Cell::get) {
-        return;
-    }
-    HOLD.with(|h| h.borrow_mut().begin());
-    let hwnd = MAIN.with(Cell::get);
-    // SAFETY: arms a timer of the main window, from its own thread.
-    unsafe {
-        SetTimer(
-            Some(HWND(hwnd as *mut _)),
-            TIMER_HOLD,
-            HOLD_TIMEOUT_MS,
-            None,
-        )
-    };
-}
-
 /// Replays what was held back, or, when nothing is left, ends the hold. Called again after every
 /// replay, so keys typed meanwhile also stay in order.
 fn drain(hwnd: HWND) {
@@ -570,366 +416,22 @@ fn drain(hwnd: HWND) {
     }
 }
 
-fn post_main(message: u32) {
-    let hwnd = MAIN.with(Cell::get);
-    // SAFETY: posting to the main window. Failure just means it is gone.
-    unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), message, WPARAM(0), LPARAM(0)).ok() };
-}
-
-unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 {
-        // SAFETY: for WH_KEYBOARD_LL, `lparam` points to a KBDLLHOOKSTRUCT.
-        let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
-        // Ignore keys sent by other programs (including our own SendInput of the IME hotkey).
-        let injected = info.flags.0 & LLKHF_INJECTED != 0;
-        if !injected {
-            note_activity();
-            // Typing is a sign of a text field, for apps whose focus changes are not reported.
-            if WAIT_FOR_TEXT.with(Cell::get)
-                && matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN)
-            {
-                post_main(WM_PASSIVE);
-            }
-        }
-        if !injected && TAP_ENABLED.with(Cell::get) {
-            // `time` is the event's own timestamp in ms, so a delayed hook call does not skew taps.
-            let key = if matches!(info.vkCode, 0xA2 | 0xA3) {
-                Key::Ctrl
-            } else {
-                Key::Other
-            };
-            let now = info.time as u64;
-            let tap = TAP.with(|t| match wparam.0 as u32 {
-                WM_KEYDOWN | WM_SYSKEYDOWN => t.borrow_mut().key_down(key, now),
-                WM_KEYUP | WM_SYSKEYUP => t.borrow_mut().key_up(key, now),
-                _ => Tap::None,
-            });
-            // A key typed while a double tap is being applied waits for it. This runs before
-            // `post_tap`, so the Ctrl release that completes the double tap itself goes through.
-            let held = HOLD.with(|h| {
-                h.borrow_mut().capture(HeldKey {
-                    vk: info.vkCode,
-                    scan: info.scanCode,
-                    extended: info.flags.0 & LLKHF_EXTENDED != 0,
-                    up: matches!(wparam.0 as u32, WM_KEYUP | WM_SYSKEYUP),
-                })
-            });
-            post_tap(tap);
-            if held {
-                return LRESULT(1);
-            }
-        }
-    }
-    // SAFETY: passing the event on, unchanged.
-    unsafe { CallNextHookEx(None, code, wparam, lparam) }
-}
-
-unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 {
-        // SAFETY: for WH_MOUSE_LL, `lparam` points to an MSLLHOOKSTRUCT.
-        let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
-        if info.flags & LLMHF_INJECTED == 0 {
-            note_activity();
-        }
-        if matches!(
-            wparam.0 as u32,
-            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
-        ) {
-            if WAIT_FOR_TEXT.with(Cell::get) {
-                post_main(WM_PASSIVE);
-            }
-            post_tap(TAP.with(|t| t.borrow_mut().pointer()));
-        }
-    }
-    // SAFETY: passing the event on, unchanged.
-    unsafe { CallNextHookEx(None, code, wparam, lparam) }
-}
-
-unsafe extern "system" fn win_event_proc(
-    _: HWINEVENTHOOK,
-    event: u32,
-    _: HWND,
-    _: i32,
-    _: i32,
-    _: u32,
-    _: u32,
-) {
-    if event == EVENT_OBJECT_FOCUS {
-        // Only interesting while the HUD waits for a text field. Focus moves all the time.
-        if WAIT_FOR_TEXT.with(Cell::get) {
-            post_main(WM_PASSIVE);
-        }
-        return;
-    }
-    if event == EVENT_SYSTEM_FOREGROUND {
-        let due = REMINDER.with(|r| {
-            r.borrow_mut()
-                .as_mut()
-                .is_some_and(|r| r.focus_changed(now_ms()))
-        });
-        if due {
-            REMIND_PENDING.with(|p| p.set(true));
-        }
-    }
-    post_main(WM_PASSIVE);
-}
-
-// ---- hotkeys -----------------------------------------------------------------------------------
-
-fn virtual_key(key: ShortcutKey) -> u32 {
-    match key {
-        ShortcutKey::Letter(c) | ShortcutKey::Digit(c) => c as u32,
-        ShortcutKey::Function(n) => 0x70 + n as u32 - 1,
-    }
-}
-
-fn modifiers(shortcut: &Shortcut) -> HOT_KEY_MODIFIERS {
-    let m = &shortcut.mods;
-    let mut flags = MOD_NOREPEAT;
-    for (on, flag) in [
-        (m.ctrl, MOD_CONTROL),
-        (m.shift, MOD_SHIFT),
-        (m.alt, MOD_ALT),
-        (m.meta, MOD_WIN),
-    ] {
-        if on {
-            flags |= flag;
-        }
-    }
-    flags
-}
-
-const HOTKEY_IMES: [Ime; 4] = [Ime::Us, Ime::Pinyin, Ime::Doubao, Ime::Mingkuai];
-
-/// Registers the configured hotkeys. Returns the ids that succeeded. The id is the index in
-/// `HOTKEY_IMES`.
-fn register_hotkeys(hwnd: HWND, config: &Config) -> Vec<i32> {
-    let mut registered = Vec::new();
-    for (id, ime) in HOTKEY_IMES.into_iter().enumerate() {
-        let Ok(Some(shortcut)) = config.shortcut(ime) else {
-            continue;
-        };
-        // SAFETY: registers a hotkey for the main window.
-        let result = unsafe {
-            RegisterHotKey(
-                Some(hwnd),
-                id as i32,
-                modifiers(&shortcut),
-                virtual_key(shortcut.key),
-            )
-        };
-        match result {
-            Ok(()) => registered.push(id as i32),
-            Err(e) => eprintln!("imetap: cannot register the hotkey for {}: {e}", ime.name()),
-        }
-    }
-    registered
-}
-
-// ---- tray --------------------------------------------------------------------------------------
-
-const TRAY_ID: u32 = 1;
-
-fn tray_data(hwnd: HWND, icon: HICON, tip: &str) -> NOTIFYICONDATAW {
-    let mut data = NOTIFYICONDATAW {
-        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
-        hWnd: hwnd,
-        uID: TRAY_ID,
-        uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
-        uCallbackMessage: WM_TRAY,
-        hIcon: icon,
-        ..Default::default()
-    };
-    for (slot, unit) in data.szTip.iter_mut().zip(tip.encode_utf16().take(127)) {
-        *slot = unit;
-    }
-    data
-}
-
-fn add_tray(hwnd: HWND) {
-    update_tray(hwnd, None, true);
-}
-
+/// Adds the tray icon (`add`) or brings it up to date, and frees the icon it replaces.
 fn update_tray(hwnd: HWND, snapshot: Option<Snapshot>, add: bool) {
-    // The tooltip is just the tool name: the state is already on the icon and in the input bar.
-    // The HUD says "EN", but the tray icon is small, so it shows a single "E" like the macOS one.
-    let follow = APP.with(|a| {
+    let lang_indicator = APP.with(|a| {
         a.borrow()
             .as_ref()
             .is_none_or(|app| app.config.tray.enable_lang_indicator)
     });
-    let icon = if follow {
-        let glyph = match snapshot.map_or("?", |s| s.glyph()) {
-            "EN" => "E",
-            other => other,
-        };
-        make_icon(glyph, snapshot)
-    } else {
-        logo_icon()
-    };
-    let data = tray_data(hwnd, icon, "imetap");
-    // SAFETY: `data` is fully initialised for the call.
-    unsafe {
-        let _ = Shell_NotifyIconW(if add { NIM_ADD } else { NIM_MODIFY }, &data);
-    }
+    let icon = tray::show(hwnd, snapshot, lang_indicator, add);
     let old = APP.with(|a| {
         a.borrow_mut()
             .as_mut()
             .and_then(|app| app.tray_icon.replace(icon))
     });
     if let Some(old) = old {
-        // SAFETY: the shell has switched to the new icon. The old handle is ours to free.
-        unsafe { DestroyIcon(old).ok() };
+        tray::free_icon(old);
     }
-}
-
-fn remove_tray(hwnd: HWND) {
-    let data = NOTIFYICONDATAW {
-        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
-        hWnd: hwnd,
-        uID: TRAY_ID,
-        ..Default::default()
-    };
-    // SAFETY: removes the icon added by `add_tray`.
-    unsafe {
-        let _ = Shell_NotifyIconW(NIM_DELETE, &data);
-    }
-}
-
-fn icon_color(snapshot: Option<Snapshot>) -> COLORREF {
-    let rgb = |r: u32, g: u32, b: u32| COLORREF(r | g << 8 | b << 16);
-    match snapshot {
-        Some(s) if s.chinese == Some(true) => rgb(196, 48, 43),
-        Some(_) => rgb(37, 99, 170),
-        None => rgb(90, 90, 90),
-    }
-}
-
-/// The imetap logo as a 32 x 32 icon, for `tray.enable_lang_indicator = false`.
-fn logo_icon() -> HICON {
-    const LOGO: &[u8] = include_bytes!("../../assets/tray.png");
-    // SAFETY: the bytes are a PNG icon image that lives for the whole program. The icon owns a copy.
-    unsafe {
-        CreateIconFromResourceEx(LOGO, true, 0x0003_0000, 32, 32, LR_DEFAULTCOLOR)
-            .unwrap_or_default()
-    }
-}
-
-/// A 32 x 32 icon: the mode glyph in white on a colour that tells the mode at a glance.
-fn make_icon(glyph: &str, snapshot: Option<Snapshot>) -> HICON {
-    const SIZE: i32 = 32;
-    // SAFETY: GDI objects created here are released before returning. The icon owns copies.
-    unsafe {
-        let screen = GetDC(None);
-        let mem = CreateCompatibleDC(Some(screen));
-        let color = CreateCompatibleBitmap(screen, SIZE, SIZE);
-        let mask = CreateBitmap(SIZE, SIZE, 1, 1, None);
-        let old = SelectObject(mem, HGDIOBJ(color.0));
-        let rect = RECT {
-            left: 0,
-            top: 0,
-            right: SIZE,
-            bottom: SIZE,
-        };
-        let brush = CreateSolidBrush(icon_color(snapshot));
-        FillRect(mem, &rect, brush);
-        let _ = DeleteObject(HGDIOBJ(brush.0));
-        SetBkMode(mem, TRANSPARENT);
-        SetTextColor(mem, COLORREF(0x00FF_FFFF));
-        draw_text(
-            mem,
-            glyph,
-            rect,
-            match glyph {
-                "E" => 26,
-                _ if glyph.is_ascii() => 17,
-                _ => 26,
-            },
-            700,
-        );
-        SelectObject(mem, old);
-        let info = ICONINFO {
-            fIcon: true.into(),
-            xHotspot: 0,
-            yHotspot: 0,
-            hbmMask: mask,
-            hbmColor: color,
-        };
-        let icon = CreateIconIndirect(&info).unwrap_or_default();
-        let _ = DeleteObject(HGDIOBJ(color.0));
-        let _ = DeleteObject(HGDIOBJ(mask.0));
-        let _ = DeleteDC(mem);
-        ReleaseDC(None, screen);
-        icon
-    }
-}
-
-fn show_menu(hwnd: HWND) {
-    // SAFETY: builds, shows and destroys a popup menu on this thread. No `APP` borrow is held, since
-    // the menu runs a nested message loop.
-    unsafe {
-        let Ok(menu) = CreatePopupMenu() else { return };
-        let autostart_flags = if autostart::is_enabled() {
-            MF_STRING | MF_CHECKED
-        } else {
-            MF_STRING
-        };
-        let _ = AppendMenuW(menu, autostart_flags, CMD_AUTOSTART, w!("Run at login"));
-        let _ = AppendMenuW(menu, MF_STRING, CMD_CONFIG, w!("Open config file"));
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT, w!("Quit"));
-        let mut at = POINT::default();
-        let _ = GetCursorPos(&mut at);
-        // The menu closes on an outside click only if its owner is the foreground window.
-        let _ = SetForegroundWindow(hwnd);
-        let command = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON,
-            at.x,
-            at.y,
-            None,
-            hwnd,
-            None,
-        )
-        .0 as usize;
-        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
-        let _ = DestroyMenu(menu);
-        match command {
-            CMD_AUTOSTART => {
-                if let Err(e) = autostart::set(!autostart::is_enabled(), debug::enabled()) {
-                    eprintln!("imetap: cannot change run at login: {e:#}");
-                }
-            }
-            CMD_CONFIG => {
-                if let Err(e) = open_config() {
-                    eprintln!("imetap: cannot open the config file: {e:#}");
-                }
-            }
-            CMD_QUIT => PostQuitMessage(0),
-            _ => {}
-        }
-    }
-}
-
-/// Opens `config.toml` in the default editor, creating a commented template first if needed.
-fn open_config() -> Result<()> {
-    let path = config::config_path().context("no configuration directory")?;
-    if !path.exists() {
-        fs::create_dir_all(path.parent().context("no parent directory")?)?;
-        fs::write(&path, config::DEFAULT_TOML)?;
-    }
-    // SAFETY: shell-opens a file path. The HSTRING outlives the call.
-    unsafe {
-        ShellExecuteW(
-            None,
-            w!("open"),
-            &HSTRING::from(path.as_os_str()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        );
-    }
-    Ok(())
 }
 
 // ---- message handling --------------------------------------------------------------------------
@@ -1081,7 +583,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_TRAY => {
             match lparam.0 as u32 {
-                WM_RBUTTONUP => show_menu(hwnd),
+                WM_RBUTTONUP => tray::show_menu(hwnd),
                 WM_LBUTTONUP => send(Job::Show),
                 _ => {}
             }
@@ -1094,18 +596,5 @@ unsafe extern "system" fn window_proc(
         }
         // SAFETY: forwarding an unhandled message with its original arguments.
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_logo_loads_as_an_icon() {
-        let icon = logo_icon();
-        assert!(!icon.is_invalid());
-        // SAFETY: the handle was created above and is not used afterwards.
-        unsafe { DestroyIcon(icon).ok() };
     }
 }

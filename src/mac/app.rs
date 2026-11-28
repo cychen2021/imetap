@@ -1,109 +1,36 @@
-//! The resident macOS tool: status item, hotkeys, Ctrl double-tap, input-source watching and HUD.
+//! The resident macOS tool: the main run loop, the actions and the reading of the state. The event
+//! taps, the hotkeys, the status item and the HUD are in `hooks`, `hotkeys`, `tray` and `hud`.
 //!
-//! Everything runs on the main run loop. There are no extra threads. The keyboard and mouse are
-//! observed with a Quartz event tap, which needs the Accessibility permission (the same as
-//! Hammerspoon). Until it is granted the tap creation is retried every few seconds.
+//! Everything runs on the main run loop, apart from the thread that watches the mode of Mingkuai.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CString, c_void};
 use std::ptr::{self, NonNull};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool};
-use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSColor,
-    NSCompositingOperation, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSGraphicsContext, NSImage, NSMenu, NSMenuItem, NSPanel, NSScreen, NSStatusBar, NSStatusItem,
-    NSStringDrawing, NSTextAlignment, NSTextField, NSView, NSWindowCollectionBehavior,
-    NSWindowStyleMask, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+    NSApplication, NSApplicationActivationPolicy, NSStatusItem, NSWorkspace,
+    NSWorkspaceDidActivateApplicationNotification,
 };
-use objc2_foundation::{
-    MainThreadMarker, NSAttributedStringKey, NSData, NSDictionary, NSNotification, NSObject,
-    NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, ns_string,
-};
+use objc2_foundation::{MainThreadMarker, NSNotification};
 
-use super::ffi::{self, CFMachPortRef, CFRunLoopTimerRef, CGEventRef, CGEventTapProxy};
-use super::{Engine, autostart_enabled, claim_pid, mingkuai, open, set_autostart};
-use crate::config::{self, Config, Key as ShortcutKey, Shortcut};
+use super::ffi::{self, CFRunLoopTimerRef};
+use super::hooks::{HOTKEYS, TAP, start_event_tap};
+use super::hud::{FADE_STEP_SECS, Hud};
+use super::{Engine, claim_pid, hotkeys, mingkuai, tray};
+use crate::config::Config;
 use crate::debug;
-use crate::fade::Fade;
-use crate::mingkuai as mingkuai_wire;
+use crate::protocol::mingkuai as mingkuai_wire;
 use crate::reminder::{Reminder, now_ms};
-use crate::state::{Color, Ime, Rgb, Snapshot};
-use crate::tap::{Key, Tap, TapDetector};
+use crate::state::{Ime, Snapshot};
+use crate::tap::TapDetector;
 
 /// How long input-source and focus notifications may settle before the state is read.
 const DEBOUNCE_SECS: f64 = 0.25;
-/// The HUD's size in points.
-const HUD_WIDTH: f64 = 240.0;
-/// Width of the stripe on the left that names the input method.
-const HUD_STRIPE: f64 = 60.0;
-const HUD_HEIGHT: f64 = 100.0;
-const HUD_BOTTOM_MARGIN: f64 = 48.0;
-/// `NSStatusWindowLevel`.
-const STATUS_WINDOW_LEVEL: isize = 25;
-
-/// Left inset of the menu header, lined up with the text of the other menu items.
-const HEADER_INSET: f64 = 14.0;
-
-const HOTKEY_IMES: [Ime; 4] = [Ime::Us, Ime::Shuangpin, Ime::Doubao, Ime::Mingkuai];
-
-define_class!(
-    /// Target of the status item's menu actions.
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "ImetapMenuTarget"]
-    struct MenuTarget;
-
-    unsafe impl NSObjectProtocol for MenuTarget {}
-
-    impl MenuTarget {
-        #[unsafe(method(quit:))]
-        fn quit(&self, _sender: Option<&AnyObject>) {
-            NSApplication::sharedApplication(self.mtm()).terminate(None);
-        }
-
-        #[unsafe(method(toggleLogin:))]
-        fn toggle_login(&self, _sender: Option<&AnyObject>) {
-            if let Err(e) = set_autostart(!autostart_enabled(), debug::enabled()) {
-                eprintln!("imetap: cannot change run at login: {e:#}");
-            }
-        }
-
-        #[unsafe(method(openConfig:))]
-        fn open_config(&self, _sender: Option<&AnyObject>) {
-            if let Err(e) = open_config_file() {
-                eprintln!("imetap: cannot open the config file: {e:#}");
-            }
-        }
-    }
-);
-
-struct Hud {
-    panel: Retained<NSPanel>,
-    glyph: Retained<NSTextField>,
-    /// The stripe on the left, in the input method's colour.
-    stripe: Retained<NSView>,
-    /// The input method's label on the stripe.
-    stripe_label: Retained<NSTextField>,
-}
-
-/// One appearance of the HUD, stepped by timers.
-#[derive(Clone, Copy)]
-struct HudRun {
-    fade: Fade,
-    started: Instant,
-    /// How far into the curve it began (non-zero when it took over from one still visible).
-    offset_ms: u64,
-}
-
-/// How often the HUD's brightness is updated.
-const FADE_STEP_SECS: f64 = 1.0 / 60.0;
 
 struct State {
     mtm: MainThreadMarker,
@@ -112,29 +39,15 @@ struct State {
     hud: Hud,
     status_item: Retained<NSStatusItem>,
     last: Option<Snapshot>,
-    hotkeys: Vec<(u16, u64, Ime)>,
-    /// The HUD's current appearance. `Some` while a chain of step timers runs.
-    hud_run: Option<HudRun>,
-    /// The HUD's last brightness, from 0.0 to 1.0.
-    hud_level: f32,
     probe_timer: Option<CFRunLoopTimerRef>,
 }
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
-    // The tap callback touches these two only, so it never collides with a borrow of `STATE`.
-    static TAP: RefCell<TapDetector> = RefCell::new(TapDetector::default());
-    static TAP_PORT: Cell<usize> = const { Cell::new(0) };
-    /// The timer that ends the wait for a third Ctrl tap.
-    static TRIPLE_TIMER: Cell<usize> = const { Cell::new(0) };
-    /// The listen-only tap that sees mouse movement, for the reminder.
-    static ACTIVITY_PORT: Cell<usize> = const { Cell::new(0) };
-    /// `None` when the reminder is off. Kept out of `STATE` like `TAP`.
-    static REMINDER: RefCell<Option<Reminder>> = const { RefCell::new(None) };
+    /// `None` when the reminder is off. The event taps touch it, so it is kept out of `STATE`.
+    pub(super) static REMINDER: RefCell<Option<Reminder>> = const { RefCell::new(None) };
     /// The next probe shows the HUD even if nothing changed.
     static REMIND_PENDING: Cell<bool> = const { Cell::new(false) };
-    /// The Accessibility prompt has been shown, so retries check silently.
-    static PROMPTED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Runs the tool until the user quits from the status item menu.
@@ -144,16 +57,7 @@ pub fn run(config: Config) -> Result<()> {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-    let hotkeys = HOTKEY_IMES
-        .into_iter()
-        .filter_map(|ime| {
-            config
-                .shortcut(ime)
-                .ok()
-                .flatten()
-                .map(|s| (keycode(s.key), flags_of(&s), ime))
-        })
-        .collect();
+    HOTKEYS.with(|h| *h.borrow_mut() = hotkeys::from_config(&config));
     let tap = TapDetector::new(config.tap.gap_ms, config.tap.hold_ms, config.tap.triple_ms);
     TAP.with(|t| *t.borrow_mut() = tap);
     let r = &config.reminder;
@@ -162,8 +66,8 @@ pub fn run(config: Config) -> Result<()> {
         REMINDER.with(|cell| *cell.borrow_mut() = Some(reminder));
     }
 
-    let status_item = make_status_item(mtm, config.tray.enable_lang_indicator);
-    let hud = make_hud(mtm);
+    let status_item = tray::make_status_item(mtm, config.tray.enable_lang_indicator);
+    let hud = Hud::new(mtm);
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
             mtm,
@@ -172,9 +76,6 @@ pub fn run(config: Config) -> Result<()> {
             hud,
             status_item,
             last: None,
-            hotkeys,
-            hud_run: None,
-            hud_level: 0.0,
             probe_timer: None,
         })
     });
@@ -189,289 +90,8 @@ pub fn run(config: Config) -> Result<()> {
     Ok(())
 }
 
-fn open_config_file() -> Result<()> {
-    let path =
-        config::config_path().ok_or_else(|| anyhow::anyhow!("no configuration directory"))?;
-    if !path.exists() {
-        std::fs::create_dir_all(
-            path.parent()
-                .ok_or_else(|| anyhow::anyhow!("no parent directory"))?,
-        )?;
-        std::fs::write(&path, config::DEFAULT_TOML)?;
-    }
-    open(&path)
-}
-
-// ---- keys --------------------------------------------------------------------------------------
-
-/// ANSI virtual key codes.
-fn keycode(key: ShortcutKey) -> u16 {
-    match key {
-        ShortcutKey::Letter(c) => match c {
-            'A' => 0,
-            'S' => 1,
-            'D' => 2,
-            'F' => 3,
-            'H' => 4,
-            'G' => 5,
-            'Z' => 6,
-            'X' => 7,
-            'C' => 8,
-            'V' => 9,
-            'B' => 11,
-            'Q' => 12,
-            'W' => 13,
-            'E' => 14,
-            'R' => 15,
-            'Y' => 16,
-            'T' => 17,
-            'O' => 31,
-            'U' => 32,
-            'I' => 34,
-            'P' => 35,
-            'L' => 37,
-            'J' => 38,
-            'K' => 40,
-            'N' => 45,
-            _ => 46, // M
-        },
-        ShortcutKey::Digit(c) => match c {
-            '1' => 18,
-            '2' => 19,
-            '3' => 20,
-            '4' => 21,
-            '5' => 23,
-            '6' => 22,
-            '7' => 26,
-            '8' => 28,
-            '9' => 25,
-            _ => 29, // 0
-        },
-        ShortcutKey::Function(n) => match n {
-            1 => 122,
-            2 => 120,
-            3 => 99,
-            4 => 118,
-            5 => 96,
-            6 => 97,
-            7 => 98,
-            8 => 100,
-            9 => 101,
-            10 => 109,
-            11 => 103,
-            _ => 111, // F12
-        },
-    }
-}
-
-fn flags_of(shortcut: &Shortcut) -> u64 {
-    let m = &shortcut.mods;
-    [
-        (m.ctrl, ffi::FLAG_CONTROL),
-        (m.shift, ffi::FLAG_SHIFT),
-        (m.alt, ffi::FLAG_ALT),
-        (m.meta, ffi::FLAG_COMMAND),
-    ]
-    .into_iter()
-    .filter(|(on, _)| *on)
-    .fold(0, |acc, (_, flag)| acc | flag)
-}
-
-const MODIFIER_MASK: u64 = ffi::FLAG_CONTROL | ffi::FLAG_SHIFT | ffi::FLAG_ALT | ffi::FLAG_COMMAND;
-const KEYCODE_CTRL_LEFT: i64 = 59;
-const KEYCODE_CTRL_RIGHT: i64 = 62;
-
-fn start_event_tap() {
-    let mask = [
-        ffi::LEFT_MOUSE_DOWN,
-        ffi::RIGHT_MOUSE_DOWN,
-        ffi::OTHER_MOUSE_DOWN,
-        ffi::KEY_DOWN,
-        ffi::KEY_UP,
-        ffi::FLAGS_CHANGED,
-    ]
-    .into_iter()
-    .fold(0u64, |acc, t| acc | 1 << t);
-    // SAFETY: creates a tap whose callback is a plain `extern "C"` function.
-    let port = unsafe {
-        ffi::CGEventTapCreate(
-            0, /* session */
-            0, /* head */
-            0, /* default */
-            mask,
-            tap_callback,
-            ptr::null_mut(),
-        )
-    };
-    if port.is_null() {
-        // Not trusted yet: show the system prompt once and try again in a few seconds. Prompting
-        // on every retry would pop the dialog up every few seconds until the user grants access.
-        ffi::ensure_accessibility(!PROMPTED.with(|p| p.replace(true)));
-        schedule(3.0, retry_tap);
-        return;
-    }
-    TAP_PORT.with(|p| p.set(port as usize));
-    attach_tap(port);
-    if REMINDER.with(|r| r.borrow().is_some()) {
-        start_activity_tap();
-    }
-}
-
-/// Attaches a tap's mach port to the main run loop and enables it.
-fn attach_tap(port: CFMachPortRef) {
-    // SAFETY: `port` is a live event tap.
-    unsafe {
-        let source = ffi::CFMachPortCreateRunLoopSource(ptr::null(), port, 0);
-        ffi::CFRunLoopAddSource(ffi::CFRunLoopGetMain(), source, ffi::kCFRunLoopCommonModes);
-        ffi::CGEventTapEnable(port, true);
-    }
-}
-
-/// A listen-only tap for mouse movement, kept apart from the main tap so that the flood of moves
-/// never waits on the hotkey logic. Keys and clicks reach the reminder through the main tap.
-fn start_activity_tap() {
-    let mask = [
-        ffi::MOUSE_MOVED,
-        ffi::LEFT_MOUSE_DRAGGED,
-        ffi::RIGHT_MOUSE_DRAGGED,
-        ffi::OTHER_MOUSE_DRAGGED,
-        ffi::SCROLL_WHEEL,
-    ]
-    .into_iter()
-    .fold(0u64, |acc, t| acc | 1 << t);
-    // SAFETY: creates a tap whose callback is a plain `extern "C"` function.
-    let port = unsafe {
-        ffi::CGEventTapCreate(
-            0, /* session */
-            1, /* tail */
-            1, /* listen only */
-            mask,
-            activity_callback,
-            ptr::null_mut(),
-        )
-    };
-    if port.is_null() {
-        eprintln!("imetap: cannot watch the mouse for the reminder");
-        return;
-    }
-    ACTIVITY_PORT.with(|p| p.set(port as usize));
-    attach_tap(port);
-}
-
-extern "C" fn activity_callback(
-    _: CGEventTapProxy,
-    kind: u32,
-    event: CGEventRef,
-    _: *mut c_void,
-) -> CGEventRef {
-    match kind {
-        ffi::TAP_DISABLED_BY_TIMEOUT | ffi::TAP_DISABLED_BY_USER_INPUT => {
-            let port = ACTIVITY_PORT.with(Cell::get) as CFMachPortRef;
-            // SAFETY: the port was created by `start_activity_tap`.
-            unsafe { ffi::CGEventTapEnable(port, true) };
-        }
-        _ => note_activity(),
-    }
-    event
-}
-
-extern "C" fn retry_tap(_: CFRunLoopTimerRef, _: *mut c_void) {
-    start_event_tap();
-}
-
-extern "C" fn tap_callback(
-    _: CGEventTapProxy,
-    kind: u32,
-    event: CGEventRef,
-    _: *mut c_void,
-) -> CGEventRef {
-    // SAFETY: `event` is valid for the duration of the callback.
-    let (flags, code, now) = unsafe {
-        (
-            ffi::CGEventGetFlags(event),
-            ffi::CGEventGetIntegerValueField(event, ffi::FIELD_KEYCODE),
-            ffi::CGEventGetTimestamp(event) / 1_000_000,
-        )
-    };
-    match kind {
-        ffi::TAP_DISABLED_BY_TIMEOUT | ffi::TAP_DISABLED_BY_USER_INPUT => {
-            // The system switches a slow tap off. Switch it back on.
-            let port = TAP_PORT.with(Cell::get) as CFMachPortRef;
-            // SAFETY: the port was created by `start_event_tap`.
-            unsafe { ffi::CGEventTapEnable(port, true) };
-            return event;
-        }
-        _ => note_activity(),
-    }
-    match kind {
-        ffi::FLAGS_CHANGED => {
-            if code == KEYCODE_CTRL_LEFT || code == KEYCODE_CTRL_RIGHT {
-                let tap = TAP.with(|t| {
-                    let mut t = t.borrow_mut();
-                    if flags & ffi::FLAG_CONTROL != 0 {
-                        t.key_down(Key::Ctrl, now)
-                    } else {
-                        t.key_up(Key::Ctrl, now)
-                    }
-                });
-                on_tap(tap);
-            } else {
-                on_tap(TAP.with(|t| t.borrow_mut().key_down(Key::Other, now)));
-            }
-        }
-        ffi::KEY_DOWN => {
-            on_tap(TAP.with(|t| t.borrow_mut().key_down(Key::Other, now)));
-            let hit = STATE.with(|s| {
-                let s = s.try_borrow().ok()?;
-                let state = s.as_ref()?;
-                state
-                    .hotkeys
-                    .iter()
-                    .find(|(k, f, _)| *k as i64 == code && flags & MODIFIER_MASK == *f)
-                    .map(|(_, _, ime)| *ime)
-            });
-            if let Some(ime) = hit {
-                act_later(Action::Set(ime));
-                // Swallow the shortcut so the frontmost app never sees it.
-                return ptr::null_mut();
-            }
-        }
-        ffi::LEFT_MOUSE_DOWN | ffi::RIGHT_MOUSE_DOWN | ffi::OTHER_MOUSE_DOWN => {
-            on_tap(TAP.with(|t| t.borrow_mut().pointer()))
-        }
-        _ => {}
-    }
-    event
-}
-
-/// Acts on a recognised tap: a double tap toggles, a triple tap shows the HUD, and a pending
-/// double tap arms the timer that waits for a third.
-fn on_tap(tap: Tap) {
-    match tap {
-        Tap::None => {}
-        Tap::Pending => {
-            let old = TRIPLE_TIMER.with(Cell::get);
-            if old != 0 {
-                // SAFETY: invalidating a timer we created. Harmless if it has fired already.
-                unsafe { ffi::CFRunLoopTimerInvalidate(old as CFRunLoopTimerRef) };
-            }
-            let wait = TAP.with(|t| t.borrow().triple_ms()) as f64 / 1000.0;
-            let timer = schedule(wait, triple_timer_fired);
-            TRIPLE_TIMER.with(|t| t.set(timer as usize));
-        }
-        Tap::Double => act_later(Action::Toggle),
-        Tap::Triple => act_later(Action::Show),
-    }
-}
-
-extern "C" fn triple_timer_fired(_: CFRunLoopTimerRef, _: *mut c_void) {
-    TRIPLE_TIMER.with(|t| t.set(0));
-    on_tap(TAP.with(|t| t.borrow_mut().expire()));
-}
-
-// ---- actions and state -------------------------------------------------------------------------
-
-enum Action {
+/// What a hotkey or a Ctrl tap asks for.
+pub(super) enum Action {
     Set(Ime),
     Toggle,
     /// Show the HUD without changing anything.
@@ -481,7 +101,7 @@ enum Action {
 /// Performs an action on the main queue, after the current callback returns. The event tap calls
 /// this: every key waits while the tap callback runs, and an action can block for up to the
 /// Mingkuai call timeout when its server is busy.
-fn act_later(action: Action) {
+pub(super) fn act_later(action: Action) {
     extern "C" fn run(context: *mut c_void) {
         // SAFETY: `context` is the box made below, and the queue runs this once.
         let action = unsafe { Box::from_raw(context.cast::<Action>()) };
@@ -528,11 +148,8 @@ fn act(action: Action) {
 /// language indicator is off).
 fn set_last(state: &mut State, snapshot: Snapshot) {
     let english = is_english(snapshot);
-    if state.config.tray.enable_lang_indicator
-        && state.last.map(is_english) != Some(english)
-        && let Some(button) = state.status_item.button(state.mtm)
-    {
-        button.setImage(Some(&status_image(english)));
+    if state.config.tray.enable_lang_indicator && state.last.map(is_english) != Some(english) {
+        tray::show_lang(&state.status_item, state.mtm, english);
     }
     state.last = Some(snapshot);
 }
@@ -622,7 +239,7 @@ fn remind() {
 }
 
 /// Feeds key or mouse activity to the reminder.
-fn note_activity() {
+pub(super) fn note_activity() {
     let resumed = REMINDER.with(|r| {
         r.borrow_mut()
             .as_mut()
@@ -663,7 +280,7 @@ fn schedule_probe() {
 }
 
 /// Fires `callback` once after `seconds` on the main run loop.
-fn schedule(
+pub(super) fn schedule(
     seconds: f64,
     callback: extern "C" fn(CFRunLoopTimerRef, *mut c_void),
 ) -> CFRunLoopTimerRef {
@@ -723,243 +340,7 @@ fn observe_changes() {
     }
 }
 
-// ---- status item -------------------------------------------------------------------------------
-
-/// The menu bar icon for a language: "中" or "E" knocked out of a rounded square, like the Windows
-/// tray icon. It is a template image, so macOS tints it for light and dark menu bars. It shows
-/// only Chinese or English: the system input menu shows the input method, but not the mode of an
-/// input method such as Mingkuai.
-fn status_image(english: bool) -> Retained<NSImage> {
-    const SIZE: f64 = 18.0;
-    let draw = RcBlock::new(move |_: NSRect| -> Bool {
-        let square = NSRect::new(NSPoint::new(1.0, 1.0), NSSize::new(SIZE - 2.0, SIZE - 2.0));
-        NSColor::blackColor().setFill();
-        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(square, 4.0, 4.0).fill();
-        let text = if english {
-            ns_string!("E")
-        } else {
-            ns_string!("中")
-        };
-        knock_out(text, NSPoint::new(SIZE / 2.0, SIZE / 2.0), 12.5);
-        Bool::YES
-    });
-    let image =
-        NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(SIZE, SIZE), false, &draw);
-    image.setTemplate(true);
-    image
-}
-
-/// The menu bar icon for `tray.enable_lang_indicator = false`: the logo drawn for the menu bar
-/// (`assets/mac/menubar.svg`, an outlined pill), as a template image at 2x.
-fn logo_image() -> Retained<NSImage> {
-    const LOGO: &[u8] = include_bytes!("../../assets/mac/menubar.png");
-    let data = NSData::with_bytes(LOGO);
-    let image = NSImage::initWithData(NSImage::alloc(), &data)
-        .expect("the embedded menu bar logo is a valid PNG");
-    image.setSize(NSSize::new(26.0, 18.0));
-    image.setTemplate(true);
-    image
-}
-
-/// Cuts `text`, centred on `center`, out of what has been drawn in the current image.
-fn knock_out(text: &NSString, center: NSPoint, font_size: f64) {
-    if let Some(context) = NSGraphicsContext::currentContext() {
-        context.setCompositingOperation(NSCompositingOperation::DestinationOut);
-    }
-    let font = NSFont::boldSystemFontOfSize(font_size);
-    let color = NSColor::blackColor();
-    // SAFETY: the attribute keys are AppKit constants and the values have the types they expect.
-    let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> = unsafe {
-        NSDictionary::from_slices(
-            &[NSFontAttributeName, NSForegroundColorAttributeName],
-            &[&**font as &AnyObject, &**color as &AnyObject],
-        )
-    };
-    // SAFETY: drawing into the image's current graphics context, which AppKit set up.
-    unsafe {
-        let size = text.sizeWithAttributes(Some(&attributes));
-        let origin = NSPoint::new(center.x - size.width / 2.0, center.y - size.height / 2.0);
-        text.drawAtPoint_withAttributes(origin, Some(&attributes));
-    }
-}
-
-fn make_status_item(mtm: MainThreadMarker, lang_indicator: bool) -> Retained<NSStatusItem> {
-    let item = NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
-    if let Some(button) = item.button(mtm) {
-        let image = if lang_indicator {
-            status_image(false)
-        } else {
-            logo_image()
-        };
-        button.setImage(Some(&image));
-        button.setToolTip(Some(ns_string!("imetap")));
-    }
-    let target: Retained<MenuTarget> = unsafe { msg_send![mtm.alloc::<MenuTarget>(), init] };
-    let menu = NSMenu::new(mtm);
-    // A header that names the tool. AppKit greys out a menu item that has no action whatever its
-    // title says, so the header is a plain label shown as the item's view, which also keeps it from
-    // highlighting.
-    let header = NSMenuItem::new(mtm);
-    let name = NSTextField::labelWithString(ns_string!("imetap"), mtm);
-    name.setFont(Some(
-        &NSFont::boldSystemFontOfSize(NSFont::systemFontSize()),
-    ));
-    name.setTextColor(Some(&NSColor::labelColor()));
-    name.sizeToFit();
-    let size = name.frame().size;
-    name.setFrameOrigin(NSPoint::new(HEADER_INSET, 3.0));
-    let view = NSView::initWithFrame(
-        mtm.alloc::<NSView>(),
-        NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(size.width + 2.0 * HEADER_INSET, size.height + 6.0),
-        ),
-    );
-    view.addSubview(&name);
-    header.setView(Some(&view));
-    menu.addItem(&header);
-    menu.addItem(&NSMenuItem::separatorItem(mtm));
-    for (title, action) in [
-        ("Run at login", sel!(toggleLogin:)),
-        ("Open config file", sel!(openConfig:)),
-        ("Quit imetap", sel!(quit:)),
-    ] {
-        let entry = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                mtm.alloc::<NSMenuItem>(),
-                &NSString::from_str(title),
-                Some(action),
-                ns_string!(""),
-            )
-        };
-        unsafe { entry.setTarget(Some(&target)) };
-        menu.addItem(&entry);
-    }
-    item.setMenu(Some(&menu));
-    // The menu items hold only weak references to their target.
-    std::mem::forget(target);
-    item
-}
-
-// ---- HUD ---------------------------------------------------------------------------------------
-
-fn label(
-    mtm: MainThreadMarker,
-    frame: NSRect,
-    size: f64,
-    bold: bool,
-    color: &NSColor,
-) -> Retained<NSTextField> {
-    let field = NSTextField::labelWithString(ns_string!(""), mtm);
-    field.setFrame(frame);
-    field.setAlignment(NSTextAlignment::Center);
-    field.setTextColor(Some(color));
-    let font = if bold {
-        NSFont::boldSystemFontOfSize(size)
-    } else {
-        NSFont::systemFontOfSize(size)
-    };
-    field.setFont(Some(&font));
-    field
-}
-
-fn make_hud(mtm: MainThreadMarker) -> Hud {
-    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(HUD_WIDTH, HUD_HEIGHT));
-    let panel = {
-        NSPanel::initWithContentRect_styleMask_backing_defer(
-            mtm.alloc::<NSPanel>(),
-            frame,
-            NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-            NSBackingStoreType::Buffered,
-            false,
-        )
-    };
-    panel.setLevel(STATUS_WINDOW_LEVEL);
-    panel.setOpaque(false);
-    panel.setHasShadow(false);
-    panel.setIgnoresMouseEvents(true);
-    panel.setBackgroundColor(Some(&NSColor::clearColor()));
-    panel.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::FullScreenAuxiliary,
-    );
-    let glyph = label(
-        mtm,
-        NSRect::new(
-            NSPoint::new(HUD_STRIPE, (HUD_HEIGHT - 66.0) / 2.0),
-            NSSize::new(HUD_WIDTH - HUD_STRIPE, 66.0),
-        ),
-        52.0,
-        true,
-        &NSColor::whiteColor(),
-    );
-    let stripe = NSView::new(mtm);
-    stripe.setFrame(NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(HUD_STRIPE, HUD_HEIGHT),
-    ));
-    stripe.setWantsLayer(true);
-    let stripe_label = label(
-        mtm,
-        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(HUD_STRIPE, 60.0)),
-        40.0,
-        true,
-        &NSColor::blackColor(),
-    );
-    if let Some(view) = panel.contentView() {
-        view.setWantsLayer(true);
-        if let Some(layer) = view.layer() {
-            layer.setCornerRadius(24.0);
-            // Clip the stripe to the rounded corners.
-            layer.setMasksToBounds(true);
-            layer.setBackgroundColor(Some(&ns_color(Color::Black.fill()).CGColor()));
-        }
-        view.addSubview(&stripe);
-        view.addSubview(&stripe_label);
-        view.addSubview(&glyph);
-    }
-    Hud {
-        panel,
-        glyph,
-        stripe,
-        stripe_label,
-    }
-}
-
-fn ns_color([r, g, b]: Rgb) -> Retained<NSColor> {
-    let channel = |v: u8| v as f64 / 255.0;
-    NSColor::colorWithSRGBRed_green_blue_alpha(channel(r), channel(g), channel(b), 1.0)
-}
-
-/// One step of the fade: sets the HUD's brightness and arms the next step, until it is over. There
-/// is at most one chain of steps. Showing the HUD again only replaces its `HudRun`.
-extern "C" fn fade_step(timer: CFRunLoopTimerRef, _: *mut c_void) {
-    // SAFETY: this one-shot timer was created by `schedule`, which hands its reference to the one
-    // callback. Nothing else uses it.
-    unsafe { ffi::CFRelease(timer) };
-    STATE.with(|s| {
-        let Ok(mut s) = s.try_borrow_mut() else {
-            return;
-        };
-        let Some(state) = s.as_mut() else { return };
-        let Some(run) = state.hud_run else { return };
-        let elapsed = run.started.elapsed().as_millis() as u64 + run.offset_ms;
-        if run.fade.finished(elapsed) {
-            state.hud.panel.orderOut(None);
-            state.hud_level = 0.0;
-            state.hud_run = None;
-            return;
-        }
-        state.hud_level = run.fade.level(elapsed);
-        state
-            .hud
-            .panel
-            .setAlphaValue(state.config.hud.opacity as f64 * state.hud_level as f64);
-        schedule(FADE_STEP_SECS, fade_step);
-    });
-}
-
+/// Shows the HUD, unless it is off, and starts its fade.
 fn show_hud(state: &mut State, snapshot: Snapshot) {
     if !state.config.hud.enabled {
         return;
@@ -969,64 +350,24 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
             r.hud_shown(now_ms());
         }
     });
-    let hud = &state.hud;
-    let style = state.config.hud.style(snapshot);
-    let colors = style.colors;
-    if let Some(layer) = hud.panel.contentView().and_then(|view| view.layer()) {
-        layer.setBackgroundColor(Some(&ns_color(colors.background).CGColor()));
-    }
-    if let Some(layer) = hud.stripe.layer() {
-        layer.setBackgroundColor(Some(&ns_color(colors.stripe).CGColor()));
-    }
-    hud.glyph.setTextColor(Some(&ns_color(colors.glyph)));
-    hud.glyph
-        .setStringValue(&NSString::from_str(snapshot.glyph()));
-    // A one-character label is bigger than a two-character one. The field is centred on the stripe.
-    let size = if style.label.chars().count() > 1 {
-        24.0
-    } else {
-        34.0
-    };
-    let height = size * 1.4;
-    hud.stripe_label
-        .setFont(Some(&NSFont::boldSystemFontOfSize(size)));
-    hud.stripe_label.setFrame(NSRect::new(
-        NSPoint::new(0.0, (HUD_HEIGHT - height) / 2.0),
-        NSSize::new(HUD_STRIPE, height),
-    ));
-    hud.stripe_label
-        .setTextColor(Some(&ns_color(colors.stripe_text)));
-    hud.stripe_label
-        .setStringValue(&NSString::from_str(&style.label));
-    // The screen of the window with keyboard focus. The first (primary) screen if there is none.
-    let screen =
-        NSScreen::mainScreen(state.mtm).or_else(|| NSScreen::screens(state.mtm).firstObject());
-    if let Some(screen) = screen {
-        let area = screen.visibleFrame();
-        let origin = NSPoint::new(
-            area.origin.x + (area.size.width - HUD_WIDTH) / 2.0,
-            area.origin.y + HUD_BOTTOM_MARGIN,
-        );
-        hud.panel.setFrameOrigin(origin);
-    }
-    // Showing again while still visible carries on from the current brightness.
-    let fade = state.config.hud.fade();
-    let offset_ms = if hud.panel.isVisible() {
-        fade.start_for(state.hud_level)
-    } else {
-        0
-    };
-    state.hud_level = fade.level(offset_ms);
-    hud.panel
-        .setAlphaValue(state.config.hud.opacity as f64 * state.hud_level as f64);
-    hud.panel.orderFrontRegardless();
-    let running = state.hud_run.is_some();
-    state.hud_run = Some(HudRun {
-        fade,
-        started: Instant::now(),
-        offset_ms,
-    });
-    if !running {
+    if state.hud.show(state.mtm, &state.config.hud, snapshot) {
         schedule(FADE_STEP_SECS, fade_step);
     }
+}
+
+/// One step of the HUD's fade, which arms the next step until the fade is over. There is at most
+/// one chain of steps. Showing the HUD again only restarts the fade it steps.
+extern "C" fn fade_step(timer: CFRunLoopTimerRef, _: *mut c_void) {
+    // SAFETY: this one-shot timer was created by `schedule`, which hands its reference to the one
+    // callback. Nothing else uses it.
+    unsafe { ffi::CFRelease(timer) };
+    STATE.with(|s| {
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return;
+        };
+        let Some(state) = s.as_mut() else { return };
+        if state.hud.step(&state.config.hud) {
+            schedule(FADE_STEP_SECS, fade_step);
+        }
+    });
 }

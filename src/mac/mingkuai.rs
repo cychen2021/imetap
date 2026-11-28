@@ -1,4 +1,4 @@
-//! Socket I/O to the Mingkuai server (`mingkuaid`). The message format is in `crate::mingkuai`.
+//! Socket I/O to the Mingkuai server (`mingkuaid`). The message format is in `crate::protocol::mingkuai`.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::mingkuai::{
+use crate::protocol::mingkuai::{
     LENGTH_LEN, get_mode_request, parse_length, parse_mode_reply, set_mode_request, socket_path,
     watch_mode_request,
 };

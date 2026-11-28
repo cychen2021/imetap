@@ -1,4 +1,4 @@
-//! Pipe I/O to the Mingkuai server (`mingkuaid`). The message format is in `crate::mingkuai`.
+//! Pipe I/O to the Mingkuai server (`mingkuaid`). The message format is in `crate::protocol::mingkuai`.
 
 use anyhow::{Result, bail};
 use windows::Win32::Foundation::{
@@ -10,7 +10,7 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Pipes::WaitNamedPipeW;
 use windows::core::HSTRING;
 
-use crate::mingkuai::{
+use crate::protocol::mingkuai::{
     LENGTH_LEN, get_mode_request, parse_length, parse_mode_reply, pipe_name, set_mode_request,
     watch_mode_request,
 };

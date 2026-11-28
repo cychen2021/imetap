@@ -1,4 +1,4 @@
-//! Pipe I/O to the Doubao server. The message format is in `crate::doubao`.
+//! Pipe I/O to the Doubao server. The message format is in `crate::protocol::doubao`.
 
 use anyhow::{Result, bail};
 use windows::Win32::Foundation::{
@@ -10,7 +10,7 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Pipes::WaitNamedPipeW;
 use windows::core::HSTRING;
 
-use crate::doubao::{
+use crate::protocol::doubao::{
     PIPE, RESPONSE_HEADER_LEN, get_state_request, parse_bool_body, parse_response_header,
     set_state_request,
 };
