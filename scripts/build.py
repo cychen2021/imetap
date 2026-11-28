@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 ROOT = Path(__file__).resolve().parent.parent
-BINARIES = ("imetap", "imetapctl")
+BINARIES = ("imetap", "imetapd")
 console = Console()
 
 

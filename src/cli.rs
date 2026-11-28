@@ -1,11 +1,12 @@
-//! The command line shared by `imetap` (GUI subsystem on Windows) and `imetapctl` (console subsystem).
+//! The command line `imetap`, and the entry point of the resident process `imetapd`.
 
 use std::fs;
+use std::process::Command as Process;
 use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
 use crate::config::{self, Config};
 use crate::debug;
@@ -14,15 +15,58 @@ use crate::state::Ime;
 
 /// Switch input methods, toggle Chinese/English and show a HUD for each change.
 #[derive(Parser)]
-#[command(version, about)]
+#[command(
+    version,
+    about,
+    arg_required_else_help = true,
+    disable_help_subcommand = true
+)]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Command>,
+    command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run in the foreground (what `start` and the login entry launch).
+    /// Manage the resident process (`imetapd`).
+    #[command(arg_required_else_help = true, disable_help_subcommand = true)]
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+    /// Switch the input method or the language.
+    #[command(arg_required_else_help = true, disable_help_subcommand = true)]
+    Switch {
+        #[command(subcommand)]
+        action: SwitchAction,
+    },
+    /// Show whether the resident process runs, and the foreground input method state.
+    Status {
+        /// Also print the raw keyboard layout and the active text input processor.
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Manage starting at login.
+    #[command(arg_required_else_help = true, disable_help_subcommand = true)]
+    Autostart {
+        #[command(subcommand)]
+        action: AutostartAction,
+    },
+    /// Print the paths imetap uses: the configuration file, the debug log and the resident process.
+    Paths,
+    /// Write a commented default configuration file, unless one exists.
+    Init,
+    /// Change the configuration file.
+    #[command(arg_required_else_help = true, disable_help_subcommand = true)]
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Run in the foreground, in this terminal.
     Run {
         /// Write the debug log, the same as setting `IMETAP_DEBUG`.
         #[arg(long)]
@@ -32,35 +76,23 @@ enum Command {
     Start,
     /// Stop the resident process.
     Stop,
-    /// Stop and start again, e.g. after editing the config.
-    Restart,
+    /// Make the running process read the configuration file again.
+    Reload,
+}
+
+#[derive(Subcommand)]
+enum SwitchAction {
     /// Switch the input method: us, pinyin, doubao (Windows), shuangpin (macOS).
-    Set { ime: String },
+    Im { ime: String },
     /// Toggle Chinese/English in the current input method.
-    Toggle,
-    /// Show whether the resident process runs, and the foreground input method state.
-    Status {
-        /// Also print the raw keyboard layout and the active text input processor.
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    /// Manage starting at login.
-    Autostart {
-        #[command(subcommand)]
-        action: AutostartAction,
-    },
-    /// Manage the configuration file.
-    Config {
-        #[command(subcommand)]
-        action: ConfigAction,
-    },
+    Lang,
 }
 
 #[derive(Subcommand)]
 enum AutostartAction {
     /// Start imetap at login.
     Enable {
-        /// Have the started process write the debug log (`run --debug`).
+        /// Have the started process write the debug log (`imetapd --debug`).
         #[arg(long)]
         debug: bool,
     },
@@ -72,91 +104,78 @@ enum AutostartAction {
 
 #[derive(Subcommand)]
 enum ConfigAction {
-    /// Print the path of the configuration file.
-    Path,
-    /// Write a commented default file, unless one exists.
-    Init,
-    /// Open the file in the default editor (created first if missing).
-    Edit,
-    /// Check the file for errors and print the effective settings.
-    Check,
+    /// Open the file in `$EDITOR`, or in the default editor of the system with `--gui` (created first if missing).
+    Edit {
+        /// Use the default editor of the system, not `$EDITOR`.
+        #[arg(long)]
+        gui: bool,
+    },
 }
 
-/// Parses the command line and runs the command.
-///
-/// `console` is true for the console-subsystem `imetapctl`, which prints straight to its own console and
-/// shows the help instead of running the resident process when given no command. The GUI-subsystem
-/// `imetap` attaches to the parent's console for everything but `run`.
-pub fn main(console: bool) -> Result<()> {
-    let cli = Cli::parse();
-    // The hidden Mingkuai support needs the config in every command, not only in `run`. A broken
-    // config leaves it off here: `run` and `config check` report the error.
+/// Reads the settings that every command needs: the hidden Mingkuai support and the list of
+/// enabled input methods. A broken config leaves them at their defaults here, because `daemon run`
+/// and `daemon reload` report the error.
+fn read_global_settings() {
     if let Some(Ok(config)) = config::config_path().map(|path| Config::load(&path)) {
         mingkuai::set_enabled(config.mingkuai.enable);
         if let Ok(list) = config.enabled_imes() {
             Ime::set_enabled(&list);
         }
     }
-    let command = match cli.command {
-        Some(command) => command,
-        None if console => {
-            Cli::command().print_help()?;
-            return Ok(());
-        }
-        None => Command::Run { debug: false },
-    };
-    if !console && !matches!(command, Command::Run { .. }) {
-        platform::attach_console();
+}
+
+/// The entry point of the resident process `imetapd`: reads the config and runs until quit.
+pub fn run_daemon(debug: bool) -> Result<()> {
+    read_global_settings();
+    if debug {
+        debug::enable();
     }
-    match command {
-        Command::Run { debug } => {
-            if debug {
-                debug::enable();
-            }
-            run()
-        }
-        Command::Start => {
-            if platform::is_running() {
-                println!("imetap is already running");
-            } else {
-                platform::start()?;
-                println!("imetap started");
-            }
-            Ok(())
-        }
-        Command::Stop => {
-            println!(
-                "{}",
-                if platform::stop()? {
-                    "imetap stopped"
+    let config = match config::config_path() {
+        Some(path) => Config::load(&path)?,
+        None => Config::default(),
+    };
+    platform::run(config)
+}
+
+/// Parses the command line of `imetap` and runs the command.
+pub fn main() -> Result<()> {
+    let cli = Cli::parse();
+    read_global_settings();
+    match cli.command {
+        Command::Daemon { action } => match action {
+            DaemonAction::Run { debug } => run_daemon(debug),
+            DaemonAction::Start => {
+                if platform::is_running() {
+                    println!("imetapd is already running");
                 } else {
-                    "imetap is not running"
+                    platform::start()?;
+                    println!("imetapd started");
                 }
-            );
-            Ok(())
-        }
-        Command::Restart => {
-            if platform::stop()? {
-                // Wait for the old instance to release its single-instance lock.
-                for _ in 0..50 {
-                    if !platform::is_running() {
-                        break;
-                    }
-                    sleep(Duration::from_millis(100));
-                }
+                Ok(())
             }
-            platform::start()?;
-            println!("imetap restarted");
-            Ok(())
-        }
-        Command::Set { ime } => {
-            let ime = Ime::parse(&ime)
-                .filter(|&i| i != Ime::Mingkuai || mingkuai::enabled())
-                .filter(|&i| i.is_enabled())
-                .ok_or_else(|| anyhow!("unknown input method `{ime}`"))?;
-            platform::engine().set(ime)
-        }
-        Command::Toggle => platform::engine().toggle(),
+            DaemonAction::Stop => {
+                println!(
+                    "{}",
+                    if platform::stop()? {
+                        "imetapd stopped"
+                    } else {
+                        "imetapd is not running"
+                    }
+                );
+                Ok(())
+            }
+            DaemonAction::Reload => reload(),
+        },
+        Command::Switch { action } => match action {
+            SwitchAction::Im { ime } => {
+                let ime = Ime::parse(&ime)
+                    .filter(|&i| i != Ime::Mingkuai || mingkuai::enabled())
+                    .filter(|&i| i.is_enabled())
+                    .ok_or_else(|| anyhow!("unknown input method `{ime}`"))?;
+                platform::engine().set(ime)
+            }
+            SwitchAction::Lang => platform::engine().toggle(),
+        },
         Command::Status { verbose } => {
             println!(
                 "process: {}",
@@ -174,9 +193,7 @@ pub fn main(console: bool) -> Result<()> {
                     "does not start at login"
                 }
             );
-            if let Some(debug) = platform::debug_status() {
-                println!("debug:   {debug}");
-            }
+            println!("debug:   {}", debug_state());
             let engine = platform::engine();
             println!("input:   {}", engine.snapshot());
             if verbose {
@@ -188,15 +205,15 @@ pub fn main(console: bool) -> Result<()> {
             AutostartAction::Enable { debug } => {
                 platform::set_autostart(true, debug)?;
                 if debug {
-                    println!("imetap will start at login and write the debug log");
+                    println!("imetapd will start at login and write the debug log");
                 } else {
-                    println!("imetap will start at login");
+                    println!("imetapd will start at login");
                 }
                 Ok(())
             }
             AutostartAction::Disable => {
                 platform::set_autostart(false, false)?;
-                println!("imetap will not start at login");
+                println!("imetapd will not start at login");
                 Ok(())
             }
             AutostartAction::Status => {
@@ -211,48 +228,105 @@ pub fn main(console: bool) -> Result<()> {
                 Ok(())
             }
         },
-        Command::Config { action } => manage_config(action),
-    }
-}
-
-fn run() -> Result<()> {
-    let config = match config::config_path() {
-        Some(path) => Config::load(&path)?,
-        None => Config::default(),
-    };
-    platform::run(config)
-}
-
-fn manage_config(action: ConfigAction) -> Result<()> {
-    let path = config::config_path().context("no configuration directory on this system")?;
-    match action {
-        ConfigAction::Path => println!("{}", path.display()),
-        ConfigAction::Init => {
+        Command::Paths => {
+            let path =
+                config::config_path().context("no configuration directory on this system")?;
+            let state = if path.exists() {
+                ""
+            } else {
+                " (does not exist, `imetap init` writes it)"
+            };
+            println!("config:  {}{state}", path.display());
+            let log = debug::log_path().display().to_string();
+            match platform::running_debug_log() {
+                Some(true) => println!("log:     {log}"),
+                _ => println!("log:     {log} (debug logging is not on: {HOW_TO_LOG})"),
+            }
+            println!("daemon:  {}", crate::daemon_exe()?.display());
+            Ok(())
+        }
+        Command::Init => {
+            let path =
+                config::config_path().context("no configuration directory on this system")?;
             if path.exists() {
                 bail!("{} already exists", path.display());
             }
-            fs::create_dir_all(path.parent().context("no parent directory")?)?;
-            fs::write(&path, config::DEFAULT_TOML)?;
+            write_default_config(&path)?;
             println!("wrote {}", path.display());
+            Ok(())
         }
-        ConfigAction::Edit => {
-            if !path.exists() {
-                fs::create_dir_all(path.parent().context("no parent directory")?)?;
-                fs::write(&path, config::DEFAULT_TOML)?;
-            }
-            platform::open(&path)?;
-        }
-        ConfigAction::Check => {
-            let source = if path.exists() {
-                path.display().to_string()
-            } else {
-                "defaults (no file)".to_string()
-            };
-            let config = Config::load(&path)?;
-            println!("ok: {source}");
-            println!("{config:#?}");
-        }
+        Command::Config { action } => match action {
+            ConfigAction::Edit { gui } => edit_config(gui),
+        },
     }
+}
+
+/// How to turn the debug log on.
+const HOW_TO_LOG: &str =
+    "start with `imetap daemon run --debug`, `imetapd --debug` or IMETAP_DEBUG=1";
+
+/// Whether the running instance writes the debug log, as a line for `status`.
+fn debug_state() -> String {
+    match platform::running_debug_log() {
+        None => "off (not running)".to_string(),
+        Some(true) => format!("on, logging to {}", debug::log_path().display()),
+        Some(false) => format!("off ({HOW_TO_LOG})"),
+    }
+}
+
+fn write_default_config(path: &std::path::Path) -> Result<()> {
+    fs::create_dir_all(path.parent().context("no parent directory")?)?;
+    fs::write(path, config::DEFAULT_TOML)?;
+    Ok(())
+}
+
+/// Opens the config file (written first if missing) in `$EDITOR`, or with `--gui` in the default
+/// editor of the system.
+fn edit_config(gui: bool) -> Result<()> {
+    let path = config::config_path().context("no configuration directory on this system")?;
+    if !path.exists() {
+        write_default_config(&path)?;
+    }
+    if gui {
+        return platform::open(&path);
+    }
+    let editor = std::env::var("EDITOR")
+        .ok()
+        .filter(|e| !e.trim().is_empty())
+        .context("`$EDITOR` is not set (use `--gui` for the default editor of the system)")?;
+    // `$EDITOR` may carry arguments, for example `code --wait`.
+    let mut words = editor.split_whitespace();
+    let status = Process::new(words.next().context("`$EDITOR` is empty")?)
+        .args(words)
+        .arg(&path)
+        .status()
+        .with_context(|| format!("cannot run `{editor}`"))?;
+    if !status.success() {
+        bail!("`{editor}` exited with {status}");
+    }
+    Ok(())
+}
+
+/// Checks the config file and makes the running process start again with it. The new process reads
+/// the file, so the settings that other code reads at start (hooks, hotkeys, tray) all follow.
+fn reload() -> Result<()> {
+    if let Some(path) = config::config_path() {
+        let config = Config::load(&path)?;
+        config.enabled_imes()?;
+    }
+    if !platform::stop()? {
+        println!("imetapd is not running, the configuration file is fine");
+        return Ok(());
+    }
+    // Wait for the old instance to release its single-instance lock.
+    for _ in 0..50 {
+        if !platform::is_running() {
+            break;
+        }
+        sleep(Duration::from_millis(100));
+    }
+    platform::start()?;
+    println!("imetapd reloaded the configuration");
     Ok(())
 }
 
@@ -263,23 +337,19 @@ mod platform {
     use std::process::Command;
 
     use anyhow::{Context, Result};
-    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     use windows::core::{HSTRING, PCWSTR, w};
 
     use crate::config::Config;
     use crate::daemon_exe;
-    use crate::debug;
     use crate::win::{Engine, app, autostart, init_com};
 
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    /// Lets `println!` reach the terminal this process was started from.
-    pub fn attach_console() {
-        // SAFETY: harmless if the parent has no console.
-        unsafe { AttachConsole(ATTACH_PARENT_PROCESS).ok() };
+    pub fn running_debug_log() -> Option<bool> {
+        app::running_debug_log()
     }
 
     pub fn engine() -> Engine {
@@ -301,24 +371,14 @@ mod platform {
 
     pub fn start() -> Result<()> {
         Command::new(daemon_exe()?)
-            .arg("run")
             .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
             .spawn()
-            .context("cannot start imetap")?;
+            .context("cannot start imetapd")?;
         Ok(())
     }
 
     pub fn autostart_enabled() -> bool {
         autostart::is_enabled()
-    }
-
-    /// Whether the running instance writes the debug log, which `run --debug` or `IMETAP_DEBUG` turns on at its start.
-    pub fn debug_status() -> Option<String> {
-        Some(match app::running_debug_log() {
-            None => "off (not running)".to_string(),
-            Some(true) => format!("on, logging to {}", debug::log_path().display()),
-            Some(false) => "off (start with `run --debug` or IMETAP_DEBUG=1 to log)".to_string(),
-        })
     }
 
     pub fn set_autostart(enabled: bool, debug: bool) -> Result<()> {
@@ -353,18 +413,9 @@ mod platform {
     use anyhow::Result;
 
     use crate::config::Config;
-    pub use crate::mac::{Engine, autostart_enabled, is_running, open, set_autostart, start, stop};
-
-    pub fn attach_console() {}
-
-    /// Whether the running instance writes the debug log, which `run --debug` or `IMETAP_DEBUG` turns on at its start.
-    pub fn debug_status() -> Option<String> {
-        Some(match crate::mac::running_debug_log() {
-            None => "off (not running)".to_string(),
-            Some(true) => format!("on, logging to {}", crate::debug::log_path().display()),
-            Some(false) => "off (start with `run --debug` or IMETAP_DEBUG=1 to log)".to_string(),
-        })
-    }
+    pub use crate::mac::{
+        Engine, autostart_enabled, is_running, open, running_debug_log, set_autostart, start, stop,
+    };
 
     pub fn engine() -> Engine {
         Engine::new()
@@ -401,8 +452,7 @@ mod platform {
         }
     }
 
-    pub fn attach_console() {}
-    pub fn debug_status() -> Option<String> {
+    pub fn running_debug_log() -> Option<bool> {
         None
     }
     pub fn engine() -> Engine {

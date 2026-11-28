@@ -1,10 +1,8 @@
-// A GUI-subsystem binary, so that the resident process and the login entry never flash a console
-// window. The management commands attach to the parent's console instead. `imetapctl` is the
-// console-subsystem twin for terminals and scripts.
-#![cfg_attr(windows, windows_subsystem = "windows")]
+//! `imetap`, the command line: manages the resident process `imetapd`, switches input methods and
+//! edits the configuration. It is a console program on every platform, so its output works in pipes.
 
 use anyhow::Result;
 
 fn main() -> Result<()> {
-    imetap::cli::main(false)
+    imetap::cli::main()
 }

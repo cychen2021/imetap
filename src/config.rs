@@ -462,7 +462,7 @@ impl Config {
 }
 
 /// A commented `config.toml` with every default spelled out (`config.example.toml`). Written by
-/// `imetap config init`.
+/// `imetap init`.
 pub const DEFAULT_TOML: &str = include_str!("../config.example.toml");
 
 /// Where `config.toml` is looked up.

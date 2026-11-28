@@ -1,5 +1,5 @@
 # imetap configuration. Every key is optional. The values below are the defaults.
-# Restart imetap after editing (`imetap restart`).
+# Reload imetap after editing (`imetap daemon reload`).
 
 # The input methods imetap handles: "us", "pinyin" (Windows), "doubao", "shuangpin" (macOS). One left
 # out gets no hotkey, cannot be set, and shows on the HUD as an unknown input method.

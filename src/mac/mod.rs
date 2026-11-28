@@ -237,12 +237,11 @@ pub fn stop() -> Result<bool> {
 pub fn start() -> Result<()> {
     let exe = daemon_exe()?;
     Command::new(exe)
-        .arg("run")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .context("cannot start imetap")?;
+        .context("cannot start imetapd")?;
     Ok(())
 }
 
@@ -266,7 +265,7 @@ fn launch_agent_plist(exe: &str, debug: bool) -> String {
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
          <plist version=\"1.0\">\n<dict>\n\
          \t<key>Label</key>\n\t<string>{LAUNCH_AGENT}</string>\n\
-         \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{exe}</string>\n\t\t<string>run</string>\n{debug}\t</array>\n\
+         \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{exe}</string>\n{debug}\t</array>\n\
          \t<key>RunAtLoad</key>\n\t<true/>\n\
          </dict>\n</plist>\n"
     )
@@ -304,10 +303,14 @@ mod tests {
 
     #[test]
     fn launch_agent_passes_debug_only_when_asked() {
-        let plain = launch_agent_plist("/bin/imetap", false);
-        assert!(plain.contains("<string>run</string>\n\t</array>"));
+        let plain = launch_agent_plist("/bin/imetapd", false);
+        assert!(plain.contains("<string>/bin/imetapd</string>\n\t</array>"));
         assert!(!plain.contains("--debug"));
-        let debug = launch_agent_plist("/bin/imetap", true);
-        assert!(debug.contains("<string>run</string>\n\t\t<string>--debug</string>\n\t</array>"));
+        let debug = launch_agent_plist("/bin/imetapd", true);
+        assert!(
+            debug.contains(
+                "<string>/bin/imetapd</string>\n\t\t<string>--debug</string>\n\t</array>"
+            )
+        );
     }
 }

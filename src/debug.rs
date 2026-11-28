@@ -1,4 +1,4 @@
-//! The debug log, which `IMETAP_DEBUG` or `run --debug` turns on, shared by both platforms.
+//! The debug log, which `IMETAP_DEBUG` or `imetapd --debug` turns on, shared by both platforms.
 //!
 //! It records what the resident process reads and decides, one line per event, in the temporary
 //! directory. The variable is read once, when the process first asks.
@@ -21,7 +21,7 @@ pub fn enabled() -> bool {
     *ENABLED.get_or_init(|| env::var_os("IMETAP_DEBUG").is_some())
 }
 
-/// Turns the log on for this process (`run --debug`). Call it before anything asks `enabled`.
+/// Turns the log on for this process (`imetapd --debug`). Call it before anything asks `enabled`.
 pub fn enable() {
     let _ = ENABLED.set(true);
 }

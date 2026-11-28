@@ -39,7 +39,7 @@ pub fn task_exists() -> bool {
 /// The command line the login entry runs, with `--debug` when it should write the debug log.
 fn run_command(debug: bool) -> Result<String> {
     let flag = if debug { " --debug" } else { "" };
-    Ok(format!("\"{}\" run{flag}", daemon_exe()?.display()))
+    Ok(format!("\"{}\"{flag}", daemon_exe()?.display()))
 }
 
 /// Creates the logon task for the current user. Fails without elevation.

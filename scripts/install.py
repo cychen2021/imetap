@@ -7,7 +7,7 @@
 
 An ad-hoc signed binary is identified by its hash, so every `cargo install` looks like a new app
 to macOS and loses the Accessibility permission. The app bundle, signed with a fixed certificate
-and identifier, keeps the permission across reinstalls and has the imetap icon. `imetap start` and
+and identifier, keeps the permission across reinstalls and has the imetap icon. `imetap daemon start` and
 `imetap autostart` use the bundle's executable when it exists.
 
 Usage: scripts/install.py [--no-install] [--cert NAME]
@@ -67,12 +67,12 @@ def main(
     if not no_install:
         run(["cargo", "install", "--path", str(ROOT)])
 
-    binary = installed_binary()
+    binary = installed_binary("imetapd")
     if mac:
         binary = make_bundle(binary)
         sign(APP, cert)
     if was_running or (mac and is_running()):
-        run([str(binary), "restart" if mac else "start"], check=False)
+        run([str(installed_binary("imetap")), "daemon", "reload" if mac else "start"], check=False)
     console.print(f"[bold green]Installed[/] {APP if mac else binary}")
     if first_cert:
         console.print(
@@ -100,25 +100,25 @@ def run(command: list[str], check: bool = True, **kwargs) -> subprocess.Complete
     return result
 
 
-def installed_binary() -> Path:
-    """The installed `imetap`, from PATH or else from the cargo bin directory."""
-    found = shutil.which("imetap")
-    exe = "imetap.exe" if sys.platform == "win32" else "imetap"
+def installed_binary(name: str) -> Path:
+    """The installed binary `name` (`imetap` or `imetapd`), from PATH or else from the cargo bin directory."""
+    found = shutil.which(name)
+    exe = f"{name}.exe" if sys.platform == "win32" else name
     path = Path(found) if found else Path.home() / ".cargo/bin" / exe
     if not path.exists():
-        console.print(f"[red]imetap is not installed at {path}.[/]")
+        console.print(f"[red]{name} is not installed at {path}.[/]")
         raise typer.Exit(1)
     return path
 
 
 def is_running() -> bool:
-    """Whether an `imetap` process is running."""
+    """Whether an `imetapd` process is running."""
     if sys.platform == "win32":
         out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq imetap.exe", "/NH"], capture_output=True, text=True
+            ["tasklist", "/FI", "IMAGENAME eq imetapd.exe", "/NH"], capture_output=True, text=True
         ).stdout
-        return "imetap.exe" in out
-    return subprocess.run(["pgrep", "-qx", "imetap"]).returncode == 0
+        return "imetapd.exe" in out
+    return subprocess.run(["pgrep", "-qx", "imetapd"]).returncode == 0
 
 
 def stop_running() -> bool:
@@ -127,7 +127,7 @@ def stop_running() -> bool:
         return False
     found = shutil.which("imetap")
     if found and sys.platform == "win32":
-        run([found, "stop"], check=False)
+        run([found, "daemon", "stop"], check=False)
         return True
     return False
 
@@ -140,13 +140,13 @@ def make_bundle(binary: Path) -> Path:
         shutil.rmtree(APP)
     (APP / "Contents/MacOS").mkdir(parents=True)
     (APP / "Contents/Resources").mkdir()
-    shutil.copy2(binary, APP / "Contents/MacOS/imetap")
+    shutil.copy2(binary, APP / "Contents/MacOS/imetapd")
     shutil.copy2(ROOT / "assets/mac/icon.icns", APP / "Contents/Resources/icon.icns")
     info = {
         "CFBundleIdentifier": IDENTIFIER,
         "CFBundleName": "imetap",
         "CFBundleDisplayName": "imetap",
-        "CFBundleExecutable": "imetap",
+        "CFBundleExecutable": "imetapd",
         "CFBundleIconFile": "icon",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": version,
@@ -156,7 +156,7 @@ def make_bundle(binary: Path) -> Path:
         "LSUIElement": True,
     }
     (APP / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
-    return APP / "Contents/MacOS/imetap"
+    return APP / "Contents/MacOS/imetapd"
 
 
 def has_certificate(name: str) -> bool:
