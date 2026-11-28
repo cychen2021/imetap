@@ -12,7 +12,7 @@ Checks: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test` (67 test
 - macOS port (`src/mac/`): event taps, HUD panel, status item, login item, signed app bundle from `scripts/install.py`. Compiles only, never run.
 - Config: `enable` list, `[tray]`, `[hud.ime_labels]` and `[hud.ime_colors]`, labels and colours derived for unknown input methods.
 - Hidden Mingkuai support on both platforms (`src/mingkuai.rs`, `src/win/mingkuai.rs`, `src/mac/mingkuai.rs`).
-- Tooling: debug log, `imetapctl`, `scripts/build.py`, `scripts/install.py`, logo and icon assets, Claude skills submodule.
+- Tooling: debug log, `imetap` (the command line, formerly `imetapctl`), `scripts/build.py`, `scripts/install.py`, logo and icon assets, Claude skills submodule.
 
 ## Problems found
 
@@ -38,8 +38,8 @@ I fix these after your approval ("approve all", or the numbers to skip or change
 
 I could not settle these. Each needs a run on your side.
 
-C1. `src/mac/` (all of it): the macOS port has never run, and it has gained many features since the first port (Mingkuai, tray "E", signed bundle, reminder, hotkeys swallowed in the event tap). Check on a Mac: `uv run scripts/install.py`, grant Accessibility, `imetap start`, then (1) press `Ctrl+Shift+S` and `Ctrl+Shift+F` and watch the HUD and the menu bar icon, (2) double-tap `Ctrl` and see the US and Shuangpin sources swap, (3) switch source from the menu bar and see the HUD, (4) set `reminder.enabled = true` with a small `idle_secs`, stop touching the mouse and keyboard, move the mouse and see the HUD, (5) `imetap restart` and `imetap status -v`. A problem if: a step shows nothing, the shortcut also types a character, the HUD appears twice, or Accessibility is asked for again after a reinstall. Then: I fix what shows up, one problem at a time.
-C2. `src/win/app.rs:706`, `src/config.rs:398` (`enable`, commit `daa57f9`): the `enable` list has unit tests, but nothing runs it on Windows. Check: set `enable = ["us", "doubao"]`, `imetap restart`, press `Ctrl+Shift+F` (it must do nothing), switch to Microsoft Pinyin from the language bar, and run `imetap set pinyin` (it must say unknown input method). A problem if: `Ctrl+Shift+F` still switches, or the HUD for Pinyin shows a wrong label or no label. Then: I fix the hotkey registration or the unknown name path.
+C1. `src/mac/` (all of it): the macOS port has never run, and it has gained many features since the first port (Mingkuai, tray "E", signed bundle, reminder, hotkeys swallowed in the event tap). Check on a Mac: `uv run scripts/install.py`, grant Accessibility, `imetap daemon start`, then (1) press `Ctrl+Shift+S` and `Ctrl+Shift+F` and watch the HUD and the menu bar icon, (2) double-tap `Ctrl` and see the US and Shuangpin sources swap, (3) switch source from the menu bar and see the HUD, (4) set `reminder.enabled = true` with a small `idle_secs`, stop touching the mouse and keyboard, move the mouse and see the HUD, (5) `imetap restart` and `imetap status -v`. A problem if: a step shows nothing, the shortcut also types a character, the HUD appears twice, or Accessibility is asked for again after a reinstall. Then: I fix what shows up, one problem at a time.
+C2. `src/win/app.rs:706`, `src/config.rs:398` (`enable`, commit `daa57f9`): the `enable` list has unit tests, but nothing runs it on Windows. Check: set `enable = ["us", "doubao"]`, `imetap daemon reload`, press `Ctrl+Shift+F` (it must do nothing), switch to Microsoft Pinyin from the language bar, and run `imetap set pinyin` (it must say unknown input method). A problem if: `Ctrl+Shift+F` still switches, or the HUD for Pinyin shows a wrong label or no label. Then: I fix the hotkey registration or the unknown name path.
 
 ## Past concerns, checked again
 
