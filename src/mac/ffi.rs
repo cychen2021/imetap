@@ -1,49 +1,77 @@
-//! Raw bindings to the C APIs the macOS port uses: Text Input Sources (Carbon), Quartz event taps
-//! and CoreFoundation run-loop plumbing.
+//! Bindings to the C and Objective-C APIs the macOS port uses (Text Input Sources, Quartz event
+//! taps, CoreFoundation run loops, libdispatch and the AppKit calls that `objc2` marks unsafe), and
+//! safe wrappers around them. All the unsafe code of the macOS port is in this file.
+//!
+//! The C callbacks are defined here. They call plain Rust functions, which travel through the
+//! user-data pointer that each C API hands back to its callback.
 
 #![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
 
 use std::ffi::{CStr, c_char, c_void};
+use std::mem;
+use std::ptr::{self, NonNull};
 
 use anyhow::{Result, bail};
+use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
+use objc2_app_kit::{
+    NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSMenuItem,
+    NSStringDrawing, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+};
+use objc2_foundation::{
+    MainThreadMarker, NSAttributedStringKey, NSDictionary, NSNotification, NSObject,
+    NSObjectProtocol, NSPoint, NSString, ns_string,
+};
 
-pub type CFTypeRef = *const c_void;
-pub type CFStringRef = *const c_void;
-pub type CFArrayRef = *const c_void;
-pub type CFIndex = isize;
-pub type CFRunLoopRef = *const c_void;
-pub type CFRunLoopSourceRef = *const c_void;
-pub type CFRunLoopTimerRef = *const c_void;
-pub type CFMachPortRef = *const c_void;
-pub type CGEventRef = *mut c_void;
-pub type CGEventTapProxy = *mut c_void;
+type CFTypeRef = *const c_void;
+type CFStringRef = *const c_void;
+type CFArrayRef = *const c_void;
+type CFIndex = isize;
+type CFRunLoopRef = *const c_void;
+type CFRunLoopSourceRef = *const c_void;
+type CFRunLoopTimerRef = *const c_void;
+type CFMachPortRef = *const c_void;
+type CGEventRef = *mut c_void;
+type CGEventTapProxy = *mut c_void;
 
-pub type CGEventTapCallBack =
+type CGEventTapCallBack =
     extern "C" fn(CGEventTapProxy, u32, CGEventRef, *mut c_void) -> CGEventRef;
-pub type CFRunLoopTimerCallBack = extern "C" fn(CFRunLoopTimerRef, *mut c_void);
-pub type CFNotificationCallback =
+type CFRunLoopTimerCallBack = extern "C" fn(CFRunLoopTimerRef, *mut c_void);
+type CFNotificationCallback =
     extern "C" fn(*const c_void, *mut c_void, CFStringRef, *const c_void, *const c_void);
 
 const kCFStringEncodingUTF8: u32 = 0x0800_0100;
+
+/// What `CFRunLoopTimerCreate` copies from its context argument.
+#[repr(C)]
+struct CFRunLoopTimerContext {
+    version: CFIndex,
+    info: *mut c_void,
+    retain: *const c_void,
+    release: *const c_void,
+    copy_description: *const c_void,
+}
 
 #[allow(clippy::duplicated_attributes)]
 #[link(name = "Carbon", kind = "framework")]
 #[link(name = "ApplicationServices", kind = "framework")]
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
-    pub static kTISPropertyInputSourceID: CFStringRef;
+    static kTISPropertyInputSourceID: CFStringRef;
     static kTISPropertyLocalizedName: CFStringRef;
-    pub static kCFRunLoopCommonModes: CFStringRef;
-    pub static kAXTrustedCheckOptionPrompt: CFStringRef;
-    pub static kCFBooleanTrue: CFTypeRef;
-    pub static kCFBooleanFalse: CFTypeRef;
+    static kCFRunLoopCommonModes: CFStringRef;
+    static kAXTrustedCheckOptionPrompt: CFStringRef;
+    static kCFBooleanTrue: CFTypeRef;
+    static kCFBooleanFalse: CFTypeRef;
 
     fn TISCopyCurrentKeyboardInputSource() -> CFTypeRef;
     fn TISCreateInputSourceList(properties: CFTypeRef, include_all_installed: bool) -> CFArrayRef;
     fn TISGetInputSourceProperty(source: CFTypeRef, key: CFStringRef) -> CFTypeRef;
     fn TISSelectInputSource(source: CFTypeRef) -> i32;
 
-    pub fn CFRelease(cf: CFTypeRef);
+    fn CFRelease(cf: CFTypeRef);
     fn CFArrayGetCount(array: CFArrayRef) -> CFIndex;
     fn CFArrayGetValueAtIndex(array: CFArrayRef, index: CFIndex) -> CFTypeRef;
     fn CFStringGetCString(
@@ -61,9 +89,9 @@ unsafe extern "C" {
         value_callbacks: *const c_void,
     ) -> CFTypeRef;
 
-    pub fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
+    fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
 
-    pub fn CGEventTapCreate(
+    fn CGEventTapCreate(
         tap: u32,
         place: u32,
         options: u32,
@@ -71,40 +99,40 @@ unsafe extern "C" {
         callback: CGEventTapCallBack,
         user_info: *mut c_void,
     ) -> CFMachPortRef;
-    pub fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
-    pub fn CGEventGetFlags(event: CGEventRef) -> u64;
-    pub fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
-    pub fn CGEventGetTimestamp(event: CGEventRef) -> u64;
+    fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+    fn CGEventGetFlags(event: CGEventRef) -> u64;
+    fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
+    fn CGEventGetTimestamp(event: CGEventRef) -> u64;
 
-    pub fn CFMachPortCreateRunLoopSource(
+    fn CFMachPortCreateRunLoopSource(
         allocator: *const c_void,
         port: CFMachPortRef,
         order: CFIndex,
     ) -> CFRunLoopSourceRef;
-    pub fn CFRunLoopGetMain() -> CFRunLoopRef;
+    fn CFRunLoopGetMain() -> CFRunLoopRef;
     /// The main queue of libdispatch. It runs on the main thread, in the main run loop.
-    pub static _dispatch_main_q: c_void;
-    pub fn dispatch_async_f(
+    static _dispatch_main_q: c_void;
+    fn dispatch_async_f(
         queue: *const c_void,
         context: *mut c_void,
         work: extern "C" fn(*mut c_void),
     );
-    pub fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
-    pub fn CFRunLoopAddTimer(rl: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef);
-    pub fn CFRunLoopTimerCreate(
+    fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
+    fn CFRunLoopAddTimer(rl: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef);
+    fn CFRunLoopTimerCreate(
         allocator: *const c_void,
         fire_date: f64,
         interval: f64,
         flags: u64,
         order: CFIndex,
         callout: CFRunLoopTimerCallBack,
-        context: *mut c_void,
+        context: *mut CFRunLoopTimerContext,
     ) -> CFRunLoopTimerRef;
-    pub fn CFRunLoopTimerInvalidate(timer: CFRunLoopTimerRef);
-    pub fn CFAbsoluteTimeGetCurrent() -> f64;
+    fn CFRunLoopTimerInvalidate(timer: CFRunLoopTimerRef);
+    fn CFAbsoluteTimeGetCurrent() -> f64;
 
-    pub fn CFNotificationCenterGetDistributedCenter() -> *const c_void;
-    pub fn CFNotificationCenterAddObserver(
+    fn CFNotificationCenterGetDistributedCenter() -> *const c_void;
+    fn CFNotificationCenterAddObserver(
         center: *const c_void,
         observer: *const c_void,
         callback: CFNotificationCallback,
@@ -112,7 +140,7 @@ unsafe extern "C" {
         object: *const c_void,
         suspension_behavior: isize,
     );
-    pub fn CFStringCreateWithCString(
+    fn CFStringCreateWithCString(
         allocator: *const c_void,
         c_str: *const c_char,
         encoding: u32,
@@ -131,9 +159,9 @@ pub const FLAGS_CHANGED: u32 = 12;
 pub const SCROLL_WHEEL: u32 = 22;
 pub const OTHER_MOUSE_DOWN: u32 = 25;
 pub const OTHER_MOUSE_DRAGGED: u32 = 27;
-pub const TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
-pub const TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
-pub const FIELD_KEYCODE: u32 = 9;
+const TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+const TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+const FIELD_KEYCODE: u32 = 9;
 
 pub const FLAG_SHIFT: u64 = 0x0002_0000;
 pub const FLAG_CONTROL: u64 = 0x0004_0000;
@@ -248,7 +276,290 @@ pub fn ensure_accessibility(prompt: bool) -> bool {
 }
 
 /// A CFString from a Rust string. The caller owns it.
-pub fn cfstring(text: &CStr) -> CFStringRef {
+fn cfstring(text: &CStr) -> CFStringRef {
     // SAFETY: `text` is NUL-terminated.
     unsafe { CFStringCreateWithCString(std::ptr::null(), text.as_ptr(), kCFStringEncodingUTF8) }
+}
+
+// ---- event taps --------------------------------------------------------------------------------
+
+/// What a tap's handler learns about an event.
+pub struct TapEvent {
+    /// The event type, or `TapEvent::DISABLED` when the system switched the tap off.
+    pub kind: u32,
+    pub flags: u64,
+    pub keycode: i64,
+    /// The event's own timestamp, in milliseconds.
+    pub time_ms: u64,
+}
+
+impl TapEvent {
+    /// The `kind` of the notice that the system switched the tap off, because it was slow or
+    /// because of user input. The handler should switch it back on with `EventTap::enable`.
+    pub const DISABLED: u32 = TAP_DISABLED_BY_TIMEOUT;
+}
+
+/// Handles an event of a tap. Returns false to swallow the event.
+pub type TapHandler = fn(&TapEvent) -> bool;
+
+/// A Quartz event tap made by `create_event_tap`.
+#[derive(Clone, Copy)]
+pub struct EventTap(CFMachPortRef);
+
+extern "C" fn tap_fired(
+    _: CGEventTapProxy,
+    kind: u32,
+    event: CGEventRef,
+    handler: *mut c_void,
+) -> CGEventRef {
+    // SAFETY: `handler` is the `TapHandler` that `create_event_tap` passed as the user data.
+    let handler = unsafe { mem::transmute::<*mut c_void, TapHandler>(handler) };
+    let disabled = matches!(kind, TAP_DISABLED_BY_TIMEOUT | TAP_DISABLED_BY_USER_INPUT);
+    let (flags, keycode, time_ms) = if disabled || event.is_null() {
+        (0, 0, 0)
+    } else {
+        // SAFETY: `event` is valid for the duration of the callback.
+        unsafe {
+            (
+                CGEventGetFlags(event),
+                CGEventGetIntegerValueField(event, FIELD_KEYCODE),
+                CGEventGetTimestamp(event) / 1_000_000,
+            )
+        }
+    };
+    let kind = if disabled { TapEvent::DISABLED } else { kind };
+    let keep = handler(&TapEvent {
+        kind,
+        flags,
+        keycode,
+        time_ms,
+    });
+    if keep { event } else { ptr::null_mut() }
+}
+
+/// Creates an event tap for the given event types in the login session. `at_tail` places it after
+/// the other taps, and a `listen_only` tap cannot swallow events. `None` when the process lacks
+/// the Accessibility permission.
+pub fn create_event_tap(
+    at_tail: bool,
+    listen_only: bool,
+    events: &[u32],
+    handler: TapHandler,
+) -> Option<EventTap> {
+    let mask = events.iter().fold(0u64, |acc, t| acc | 1 << t);
+    // SAFETY: the callback is a plain `extern "C"` function, and the user data is a function
+    // pointer, which lives for the whole program.
+    let port = unsafe {
+        CGEventTapCreate(
+            0, /* session */
+            u32::from(at_tail),
+            u32::from(listen_only),
+            mask,
+            tap_fired,
+            handler as *mut c_void,
+        )
+    };
+    (!port.is_null()).then_some(EventTap(port))
+}
+
+impl EventTap {
+    /// Attaches the tap to the main run loop and switches it on.
+    pub fn attach(self) {
+        // SAFETY: `self.0` is a live event tap, never released.
+        unsafe {
+            let source = CFMachPortCreateRunLoopSource(ptr::null(), self.0, 0);
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+            CGEventTapEnable(self.0, true);
+        }
+    }
+
+    /// Switches the tap back on after the system switched it off.
+    pub fn enable(self) {
+        // SAFETY: `self.0` is a live event tap, never released.
+        unsafe { CGEventTapEnable(self.0, true) };
+    }
+}
+
+// ---- run loop and main queue -------------------------------------------------------------------
+
+/// A one-shot timer on the main run loop, made by `schedule`.
+#[derive(Clone, Copy)]
+pub struct Timer(CFRunLoopTimerRef);
+
+impl Timer {
+    /// Stops the timer. Harmless if it has fired already.
+    pub fn cancel(self) {
+        // SAFETY: `schedule` never releases its timers, so `self.0` is still alive.
+        unsafe { CFRunLoopTimerInvalidate(self.0) };
+    }
+}
+
+extern "C" fn timer_fired(_: CFRunLoopTimerRef, handler: *mut c_void) {
+    // SAFETY: `handler` is the `fn()` that `add_timer` put in the timer's context.
+    let handler = unsafe { mem::transmute::<*mut c_void, fn()>(handler) };
+    handler();
+}
+
+/// Adds a one-shot timer that calls `handler` after `seconds` to the main run loop. The caller
+/// owns the returned reference.
+fn add_timer(seconds: f64, handler: fn()) -> CFRunLoopTimerRef {
+    let mut context = CFRunLoopTimerContext {
+        version: 0,
+        info: handler as *mut c_void,
+        retain: ptr::null(),
+        release: ptr::null(),
+        copy_description: ptr::null(),
+    };
+    // SAFETY: creates a one-shot timer on the main run loop. CF copies the context, and its
+    // `info` is a function pointer, which lives for the whole program.
+    unsafe {
+        let timer = CFRunLoopTimerCreate(
+            ptr::null(),
+            CFAbsoluteTimeGetCurrent() + seconds,
+            0.0,
+            0,
+            0,
+            timer_fired,
+            &mut context,
+        );
+        CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopCommonModes);
+        timer
+    }
+}
+
+/// Calls `handler` once after `seconds` on the main run loop. The timer can be cancelled.
+pub fn schedule(seconds: f64, handler: fn()) -> Timer {
+    Timer(add_timer(seconds, handler))
+}
+
+/// Calls `handler` once after `seconds` on the main run loop, with no way to cancel it.
+pub fn schedule_once(seconds: f64, handler: fn()) {
+    let timer = add_timer(seconds, handler);
+    // SAFETY: the run loop holds its own reference until the timer has fired, so ours can go.
+    unsafe { CFRelease(timer) };
+}
+
+/// Runs `job` on the main thread, after the current callback returns. Callable from any thread.
+pub fn run_on_main(job: impl FnOnce() + Send + 'static) {
+    type Job = Box<dyn FnOnce() + Send>;
+    extern "C" fn run(context: *mut c_void) {
+        // SAFETY: `context` is the box made below, and the queue runs this once.
+        let job = unsafe { Box::from_raw(context.cast::<Job>()) };
+        job();
+    }
+    let job: Job = Box::new(job);
+    let context = Box::into_raw(Box::new(job)).cast::<c_void>();
+    // SAFETY: the main queue takes the box and gives it back to `run`.
+    unsafe { dispatch_async_f(&raw const _dispatch_main_q, context, run) };
+}
+
+// ---- notifications -----------------------------------------------------------------------------
+
+extern "C" fn notified(
+    _: *const c_void,
+    handler: *mut c_void,
+    _: CFStringRef,
+    _: *const c_void,
+    _: *const c_void,
+) {
+    // SAFETY: `handler` is the `fn()` that `on_input_source_change` registered as the observer.
+    let handler = unsafe { mem::transmute::<*mut c_void, fn()>(handler) };
+    handler();
+}
+
+/// Calls `handler` whenever the selected keyboard input source changes, for the whole process.
+pub fn on_input_source_change(handler: fn()) {
+    let name = cfstring(c"com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged");
+    // SAFETY: registers a C callback with the distributed notification center. The observer is a
+    // function pointer, which lives for the whole program. 4 is "deliver immediately".
+    unsafe {
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDistributedCenter(),
+            handler as *const c_void,
+            notified,
+            name,
+            ptr::null(),
+            4,
+        );
+    }
+}
+
+/// Calls `handler` whenever another application comes to the front, for the whole process.
+pub fn on_app_activation(handler: fn()) {
+    let block = RcBlock::new(move |_: NonNull<NSNotification>| handler());
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    // SAFETY: registers a block with the workspace's notification center, which copies it. The
+    // observer is kept for the whole process.
+    let observer = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSWorkspaceDidActivateApplicationNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    mem::forget(observer);
+}
+
+// ---- AppKit ------------------------------------------------------------------------------------
+
+define_class!(
+    /// The target of a menu item made by `menu_item`: calls the item's handler.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ImetapMenuTarget"]
+    #[ivars = fn(MainThreadMarker)]
+    struct MenuTarget;
+
+    unsafe impl NSObjectProtocol for MenuTarget {}
+
+    impl MenuTarget {
+        #[unsafe(method(perform:))]
+        fn perform(&self, _sender: Option<&AnyObject>) {
+            (self.ivars())(self.mtm());
+        }
+    }
+);
+
+/// A menu item titled `title` that calls `handler` when chosen.
+pub fn menu_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    handler: fn(MainThreadMarker),
+) -> Retained<NSMenuItem> {
+    let target = mtm.alloc::<MenuTarget>().set_ivars(handler);
+    // SAFETY: `init` is the initializer of NSObject, the superclass, and the ivars are set.
+    let target: Retained<MenuTarget> = unsafe { msg_send![super(target), init] };
+    // SAFETY: `perform:` is a method of the target that takes the sender.
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            mtm.alloc::<NSMenuItem>(),
+            &NSString::from_str(title),
+            Some(sel!(perform:)),
+            ns_string!(""),
+        )
+    };
+    // SAFETY: the target is kept alive below.
+    unsafe { item.setTarget(Some(&target)) };
+    // The menu item holds only a weak reference to its target.
+    mem::forget(target);
+    item
+}
+
+/// Draws `text` in `font` and `color`, centred on `center`, in the current graphics context.
+pub fn draw_text(text: &NSString, center: NSPoint, font: &NSFont, color: &NSColor) {
+    let (font, color): (&AnyObject, &AnyObject) = (font, color);
+    // SAFETY: the attribute keys are AppKit constants and the values have the types they expect.
+    let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> = unsafe {
+        NSDictionary::from_slices(
+            &[NSFontAttributeName, NSForegroundColorAttributeName],
+            &[font, color],
+        )
+    };
+    // SAFETY: drawing into the current graphics context, which the caller's AppKit drawing set up.
+    unsafe {
+        let size = text.sizeWithAttributes(Some(&attributes));
+        let origin = NSPoint::new(center.x - size.width / 2.0, center.y - size.height / 2.0);
+        text.drawAtPoint_withAttributes(origin, Some(&attributes));
+    }
 }

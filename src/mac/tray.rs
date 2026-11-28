@@ -2,56 +2,37 @@
 
 use anyhow::{Result, anyhow};
 use block2::RcBlock;
+use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool};
-use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
+use objc2::runtime::Bool;
 use objc2_app_kit::{
-    NSApplication, NSBezierPath, NSColor, NSCompositingOperation, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSGraphicsContext, NSImage, NSMenu, NSMenuItem, NSStatusBar,
-    NSStatusItem, NSStringDrawing, NSTextField, NSView,
+    NSApplication, NSBezierPath, NSColor, NSCompositingOperation, NSFont, NSGraphicsContext,
+    NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSTextField, NSView,
 };
-use objc2_foundation::{
-    MainThreadMarker, NSAttributedStringKey, NSData, NSDictionary, NSObject, NSObjectProtocol,
-    NSPoint, NSRect, NSSize, NSString, ns_string,
-};
+use objc2_foundation::{MainThreadMarker, NSData, NSPoint, NSRect, NSSize, NSString, ns_string};
 
-use super::{autostart_enabled, open, set_autostart};
+use super::{autostart_enabled, ffi, open, set_autostart};
 use crate::config;
 use crate::debug;
 
 /// Left inset of the menu header, lined up with the text of the other menu items.
 const HEADER_INSET: f64 = 14.0;
 
-define_class!(
-    /// Target of the status item's menu actions.
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "ImetapMenuTarget"]
-    struct MenuTarget;
+fn quit(mtm: MainThreadMarker) {
+    NSApplication::sharedApplication(mtm).terminate(None);
+}
 
-    unsafe impl NSObjectProtocol for MenuTarget {}
-
-    impl MenuTarget {
-        #[unsafe(method(quit:))]
-        fn quit(&self, _sender: Option<&AnyObject>) {
-            NSApplication::sharedApplication(self.mtm()).terminate(None);
-        }
-
-        #[unsafe(method(toggleLogin:))]
-        fn toggle_login(&self, _sender: Option<&AnyObject>) {
-            if let Err(e) = set_autostart(!autostart_enabled(), debug::enabled()) {
-                eprintln!("imetap: cannot change run at login: {e:#}");
-            }
-        }
-
-        #[unsafe(method(openConfig:))]
-        fn open_config(&self, _sender: Option<&AnyObject>) {
-            if let Err(e) = open_config_file() {
-                eprintln!("imetap: cannot open the config file: {e:#}");
-            }
-        }
+fn toggle_login(_: MainThreadMarker) {
+    if let Err(e) = set_autostart(!autostart_enabled(), debug::enabled()) {
+        eprintln!("imetap: cannot change run at login: {e:#}");
     }
-);
+}
+
+fn open_config(_: MainThreadMarker) {
+    if let Err(e) = open_config_file() {
+        eprintln!("imetap: cannot open the config file: {e:#}");
+    }
+}
 
 /// Opens `config.toml` with the default application, creating a commented template first if needed.
 fn open_config_file() -> Result<()> {
@@ -115,20 +96,7 @@ fn knock_out(text: &NSString, center: NSPoint, font_size: f64) {
         context.setCompositingOperation(NSCompositingOperation::DestinationOut);
     }
     let font = NSFont::boldSystemFontOfSize(font_size);
-    let color = NSColor::blackColor();
-    // SAFETY: the attribute keys are AppKit constants and the values have the types they expect.
-    let attributes: Retained<NSDictionary<NSAttributedStringKey, AnyObject>> = unsafe {
-        NSDictionary::from_slices(
-            &[NSFontAttributeName, NSForegroundColorAttributeName],
-            &[&**font as &AnyObject, &**color as &AnyObject],
-        )
-    };
-    // SAFETY: drawing into the image's current graphics context, which AppKit set up.
-    unsafe {
-        let size = text.sizeWithAttributes(Some(&attributes));
-        let origin = NSPoint::new(center.x - size.width / 2.0, center.y - size.height / 2.0);
-        text.drawAtPoint_withAttributes(origin, Some(&attributes));
-    }
+    ffi::draw_text(text, center, &font, &NSColor::blackColor());
 }
 
 /// Puts the status item in the menu bar, with the mode icon (`lang_indicator`) or the logo.
@@ -146,7 +114,6 @@ pub(super) fn make_status_item(
         button.setImage(Some(&image));
         button.setToolTip(Some(ns_string!("imetap")));
     }
-    let target: Retained<MenuTarget> = unsafe { msg_send![mtm.alloc::<MenuTarget>(), init] };
     let menu = NSMenu::new(mtm);
     // A header that names the tool. AppKit greys out a menu item that has no action whatever its
     // title says, so the header is a plain label shown as the item's view, which also keeps it from
@@ -171,24 +138,13 @@ pub(super) fn make_status_item(
     header.setView(Some(&view));
     menu.addItem(&header);
     menu.addItem(&NSMenuItem::separatorItem(mtm));
-    for (title, action) in [
-        ("Run at login", sel!(toggleLogin:)),
-        ("Open config file", sel!(openConfig:)),
-        ("Quit imetap", sel!(quit:)),
+    for (title, handler) in [
+        ("Run at login", toggle_login as fn(MainThreadMarker)),
+        ("Open config file", open_config),
+        ("Quit imetap", quit),
     ] {
-        let entry = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                mtm.alloc::<NSMenuItem>(),
-                &NSString::from_str(title),
-                Some(action),
-                ns_string!(""),
-            )
-        };
-        unsafe { entry.setTarget(Some(&target)) };
-        menu.addItem(&entry);
+        menu.addItem(&ffi::menu_item(mtm, title, handler));
     }
     item.setMenu(Some(&menu));
-    // The menu items hold only weak references to their target.
-    std::mem::forget(target);
     item
 }

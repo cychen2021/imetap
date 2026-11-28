@@ -4,21 +4,15 @@
 //! Everything runs on the main run loop, apart from the thread that watches the mode of Mingkuai.
 
 use std::cell::{Cell, RefCell};
-use std::ffi::{CString, c_void};
-use std::ptr::{self, NonNull};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
-use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSStatusItem, NSWorkspace,
-    NSWorkspaceDidActivateApplicationNotification,
-};
-use objc2_foundation::{MainThreadMarker, NSNotification};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSStatusItem};
+use objc2_foundation::MainThreadMarker;
 
-use super::ffi::{self, CFRunLoopTimerRef};
+use super::ffi::{self, Timer};
 use super::hooks::{HOTKEYS, TAP, start_event_tap};
 use super::hud::{FADE_STEP_SECS, Hud};
 use super::{Engine, claim_pid, hotkeys, mingkuai, tray};
@@ -39,7 +33,7 @@ struct State {
     hud: Hud,
     status_item: Retained<NSStatusItem>,
     last: Option<Snapshot>,
-    probe_timer: Option<CFRunLoopTimerRef>,
+    probe_timer: Option<Timer>,
 }
 
 thread_local! {
@@ -102,14 +96,7 @@ pub(super) enum Action {
 /// this: every key waits while the tap callback runs, and an action can block for up to the
 /// Mingkuai call timeout when its server is busy.
 pub(super) fn act_later(action: Action) {
-    extern "C" fn run(context: *mut c_void) {
-        // SAFETY: `context` is the box made below, and the queue runs this once.
-        let action = unsafe { Box::from_raw(context.cast::<Action>()) };
-        act(*action);
-    }
-    let context = Box::into_raw(Box::new(action)).cast::<c_void>();
-    // SAFETY: the main queue takes the box and gives it back to `run`.
-    unsafe { ffi::dispatch_async_f(&raw const ffi::_dispatch_main_q, context, run) };
+    ffi::run_on_main(move || act(action));
 }
 
 /// Performs an action and always shows the result.
@@ -192,14 +179,7 @@ fn spawn_mingkuai_watcher() {
             let result = mingkuai::watch(|chinese| {
                 debug::log(|| format!("mingkuai mode chinese={chinese} first={first}"));
                 if !std::mem::replace(&mut first, false) {
-                    // SAFETY: queues a plain function with no data on the main queue.
-                    unsafe {
-                        ffi::dispatch_async_f(
-                            &raw const ffi::_dispatch_main_q,
-                            ptr::null_mut(),
-                            mingkuai_mode_changed,
-                        )
-                    };
+                    ffi::run_on_main(mingkuai_mode_changed);
                 }
             });
             if let Err(e) = result {
@@ -212,7 +192,7 @@ fn spawn_mingkuai_watcher() {
 
 /// Runs on the main thread after the mode of Mingkuai changed. Shows the HUD if Mingkuai is the
 /// active input method.
-extern "C" fn mingkuai_mode_changed(_: *mut c_void) {
+fn mingkuai_mode_changed() {
     STATE.with(|s| {
         let Ok(mut s) = s.try_borrow_mut() else {
             return;
@@ -228,7 +208,7 @@ extern "C" fn mingkuai_mode_changed(_: *mut c_void) {
     });
 }
 
-extern "C" fn probe_timer_fired(_: CFRunLoopTimerRef, _: *mut c_void) {
+fn probe_timer_fired() {
     probe(true, REMIND_PENDING.replace(false));
 }
 
@@ -272,72 +252,16 @@ fn schedule_probe() {
         };
         let Some(state) = s.as_mut() else { return };
         if let Some(old) = state.probe_timer.take() {
-            // SAFETY: invalidating a timer we created. The run loop releases it.
-            unsafe { ffi::CFRunLoopTimerInvalidate(old) };
+            old.cancel();
         }
-        state.probe_timer = Some(schedule(DEBOUNCE_SECS, probe_timer_fired));
+        state.probe_timer = Some(ffi::schedule(DEBOUNCE_SECS, probe_timer_fired));
     });
 }
 
-/// Fires `callback` once after `seconds` on the main run loop.
-pub(super) fn schedule(
-    seconds: f64,
-    callback: extern "C" fn(CFRunLoopTimerRef, *mut c_void),
-) -> CFRunLoopTimerRef {
-    // SAFETY: creates a one-shot timer on the main run loop.
-    unsafe {
-        let timer = ffi::CFRunLoopTimerCreate(
-            ptr::null(),
-            ffi::CFAbsoluteTimeGetCurrent() + seconds,
-            0.0,
-            0,
-            0,
-            callback,
-            ptr::null_mut(),
-        );
-        ffi::CFRunLoopAddTimer(ffi::CFRunLoopGetMain(), timer, ffi::kCFRunLoopCommonModes);
-        timer
-    }
-}
-
-extern "C" fn input_source_changed(
-    _: *const c_void,
-    _: *mut c_void,
-    _: ffi::CFStringRef,
-    _: *const c_void,
-    _: *const c_void,
-) {
-    schedule_probe();
-}
-
+/// Watches for changes of the input source and of the frontmost application.
 fn observe_changes() {
-    let mtm = MainThreadMarker::new().expect("main thread");
-    // SAFETY: registers a C callback with the distributed notification center and a block with the
-    // workspace. Both live for the whole process.
-    unsafe {
-        let name = ffi::cfstring(
-            &CString::new("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged").unwrap(),
-        );
-        ffi::CFNotificationCenterAddObserver(
-            ffi::CFNotificationCenterGetDistributedCenter(),
-            ptr::null(),
-            input_source_changed,
-            name,
-            ptr::null(),
-            4,
-        );
-
-        let block = RcBlock::new(|_: NonNull<NSNotification>| focus_changed());
-        let center = NSWorkspace::sharedWorkspace().notificationCenter();
-        let observer = center.addObserverForName_object_queue_usingBlock(
-            Some(NSWorkspaceDidActivateApplicationNotification),
-            None,
-            None,
-            &block,
-        );
-        std::mem::forget(observer);
-        let _ = mtm;
-    }
+    ffi::on_input_source_change(schedule_probe);
+    ffi::on_app_activation(focus_changed);
 }
 
 /// Shows the HUD, unless it is off, and starts its fade.
@@ -351,23 +275,20 @@ fn show_hud(state: &mut State, snapshot: Snapshot) {
         }
     });
     if state.hud.show(state.mtm, &state.config.hud, snapshot) {
-        schedule(FADE_STEP_SECS, fade_step);
+        ffi::schedule_once(FADE_STEP_SECS, fade_step);
     }
 }
 
 /// One step of the HUD's fade, which arms the next step until the fade is over. There is at most
 /// one chain of steps. Showing the HUD again only restarts the fade it steps.
-extern "C" fn fade_step(timer: CFRunLoopTimerRef, _: *mut c_void) {
-    // SAFETY: this one-shot timer was created by `schedule`, which hands its reference to the one
-    // callback. Nothing else uses it.
-    unsafe { ffi::CFRelease(timer) };
+fn fade_step() {
     STATE.with(|s| {
         let Ok(mut s) = s.try_borrow_mut() else {
             return;
         };
         let Some(state) = s.as_mut() else { return };
         if state.hud.step(&state.config.hud) {
-            schedule(FADE_STEP_SECS, fade_step);
+            ffi::schedule_once(FADE_STEP_SECS, fade_step);
         }
     });
 }
