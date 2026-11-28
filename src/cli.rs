@@ -119,9 +119,7 @@ enum ConfigAction {
 fn read_global_settings() {
     if let Some(Ok(config)) = config::config_path().map(|path| Config::load(&path)) {
         mingkuai::set_enabled(config.mingkuai.enable);
-        if let Ok(list) = config.enabled_imes() {
-            Ime::set_enabled(&list);
-        }
+        Ime::set_enabled(&config.enable.resolve(platform::available_imes));
     }
 }
 
@@ -312,8 +310,7 @@ fn edit_config(gui: bool) -> Result<()> {
 /// the file, so the settings that other code reads at start (hooks, hotkeys, tray) all follow.
 fn reload() -> Result<()> {
     if let Some(path) = config::config_path() {
-        let config = Config::load(&path)?;
-        config.enabled_imes()?;
+        Config::load(&path)?;
     }
     if !platform::stop()? {
         println!("imetapd is not running, the configuration file is fine");
@@ -344,13 +341,19 @@ mod platform {
 
     use crate::config::Config;
     use crate::daemon_path::daemon_exe;
-    use crate::win::{Engine, app, autostart, init_com};
+    use crate::state::Ime;
+    use crate::win::{Engine, app, autostart, ime, init_com};
 
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     pub fn running_debug_log() -> Option<bool> {
         app::running_debug_log()
+    }
+
+    /// The supported input methods that the system offers.
+    pub fn available_imes() -> Vec<Ime> {
+        ime::available()
     }
 
     pub fn engine() -> Engine {
@@ -415,7 +418,8 @@ mod platform {
 
     use crate::config::Config;
     pub use crate::mac::{
-        Engine, autostart_enabled, is_running, open, running_debug_log, set_autostart, start, stop,
+        Engine, autostart_enabled, available_imes, is_running, open, running_debug_log,
+        set_autostart, start, stop,
     };
 
     pub fn engine() -> Engine {
@@ -456,6 +460,10 @@ mod platform {
     pub fn running_debug_log() -> Option<bool> {
         None
     }
+    pub fn available_imes() -> Vec<Ime> {
+        vec![Ime::Us, Ime::Pinyin, Ime::Doubao, Ime::Shuangpin]
+    }
+
     pub fn engine() -> Engine {
         Engine
     }

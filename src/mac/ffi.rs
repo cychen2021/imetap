@@ -223,6 +223,22 @@ pub fn current_source() -> Option<String> {
     }
 }
 
+/// The identifiers of the enabled input sources, those in the input menu.
+pub fn enabled_sources() -> Vec<String> {
+    // SAFETY: the list follows the "create" rule and is released. Sources stay valid while it lives.
+    unsafe {
+        let list = TISCreateInputSourceList(std::ptr::null(), false);
+        if list.is_null() {
+            return Vec::new();
+        }
+        let ids = (0..CFArrayGetCount(list))
+            .filter_map(|i| id_of(CFArrayGetValueAtIndex(list, i)))
+            .collect();
+        CFRelease(list);
+        ids
+    }
+}
+
 /// Selects the enabled input source with the given identifier.
 pub fn select_source(wanted: &str) -> Result<()> {
     // SAFETY: the list follows the "create" rule and is released. Sources stay valid while it lives.

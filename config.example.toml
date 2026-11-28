@@ -1,9 +1,11 @@
 # imetap configuration. Every key is optional. The values below are the defaults.
 # Reload imetap after editing (`imetap daemon reload`).
 
-# The input methods imetap handles: "us", "pinyin" (Windows), "doubao", "shuangpin" (macOS). One left
-# out gets no hotkey, cannot be set, and shows on the HUD as an unknown input method.
-enable = ["us", "pinyin", "doubao", "shuangpin"]
+# The input methods imetap handles, among "us", "pinyin" (Windows), "doubao" and "shuangpin" (macOS):
+# "all_available" for those the system offers (added in its input settings), or a list such as
+# ["us", "doubao"]. One left out gets no hotkey, cannot be set, and shows on the HUD as an unknown
+# input method.
+enable = "all_available"
 
 [tap]
 # Double-tap Ctrl to toggle Chinese/English. Triple-tap it to show the HUD without changing anything.

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use serde::Deserialize;
 
-/// The input methods that `enable` leaves on. All four by default.
+/// The input methods that `enable` leaves on. All four until `cli` applies `enable`.
 static ENABLED_MASK: AtomicU8 = AtomicU8::new(0b1111);
 
 /// The input methods the tool knows about.

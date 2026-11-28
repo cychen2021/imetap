@@ -33,6 +33,11 @@ use crate::debug;
 use crate::state::{Ime, Snapshot};
 use ime::{ime_of, last_chinese, remember_chinese, source_id};
 
+/// The supported input methods that the system offers. Call it from the main thread only.
+pub fn available_imes() -> Vec<Ime> {
+    ime::available()
+}
+
 /// Reads and changes the input source. Call it from the main thread only (TIS requires that).
 pub struct Engine;
 

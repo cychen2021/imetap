@@ -6,10 +6,10 @@ use windows::Win32::Globalization::{
     GetLocaleInfoEx, LCIDToLocaleName, LOCALE_SNATIVELANGUAGENAME,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
-use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, GetKeyboardLayoutList, HKL};
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIP_KEYBOARD, ITfInputProcessorProfileMgr,
-    ITfInputProcessorProfiles, TF_INPUTPROCESSORPROFILE, TF_IPPMF_FORSESSION,
+    ITfInputProcessorProfiles, TF_INPUTPROCESSORPROFILE, TF_IPP_FLAG_ENABLED, TF_IPPMF_FORSESSION,
     TF_PROFILETYPE_INPUTPROCESSOR,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -17,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{GUID, PCWSTR};
 
+use super::init_com;
 use crate::protocol::mingkuai;
 use crate::state::Ime;
 
@@ -46,6 +47,61 @@ const MINGKUAI: (GUID, GUID) = (
 fn profile_mgr() -> Result<ITfInputProcessorProfileMgr> {
     // SAFETY: plain COM activation of an in-process system class on a COM-initialised thread.
     Ok(unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)? })
+}
+
+/// The input methods imetap supports on Windows that the system offers: the US layout when an
+/// English (US) layout is in the keyboard layout list, and Microsoft Pinyin and Doubao when their
+/// profiles are turned on in the language settings. When the profiles cannot be read, both count
+/// as offered.
+pub fn available() -> Vec<Ime> {
+    init_com();
+    let mut found = Vec::new();
+    if keyboard_layouts().iter().any(|&hkl| hkl & 0xFFFF == 0x0409) {
+        found.push(Ime::Us);
+    }
+    let tips = enabled_tips();
+    for (ime, (clsid, _)) in [(Ime::Pinyin, PINYIN), (Ime::Doubao, DOUBAO)] {
+        if tips.as_ref().is_none_or(|tips| tips.contains(&clsid)) {
+            found.push(ime);
+        }
+    }
+    found
+}
+
+/// The keyboard layout handles in the user's layout list.
+fn keyboard_layouts() -> Vec<usize> {
+    // SAFETY: the first call only counts. The second fills a buffer of that length.
+    unsafe {
+        let count = GetKeyboardLayoutList(None);
+        let mut list = vec![HKL::default(); count.max(0) as usize];
+        let count = GetKeyboardLayoutList(Some(&mut list));
+        list.truncate(count.max(0) as usize);
+        list.into_iter().map(|hkl| hkl.0 as usize).collect()
+    }
+}
+
+/// The CLSIDs of the Chinese (PRC) text input processors whose profiles are turned on. `None`
+/// when TSF cannot be asked.
+fn enabled_tips() -> Option<Vec<GUID>> {
+    let mgr = profile_mgr().ok()?;
+    // SAFETY: a plain COM call on a COM-initialised thread.
+    let profiles = unsafe { mgr.EnumProfiles(LANG_ZH_CN) }.ok()?;
+    let mut found = Vec::new();
+    loop {
+        let mut batch: [TF_INPUTPROCESSORPROFILE; 8] = Default::default();
+        let mut fetched = 0u32;
+        // SAFETY: `batch` and `fetched` are valid out parameters for the duration of the call.
+        if unsafe { profiles.Next(&mut batch, &mut fetched) }.is_err() || fetched == 0 {
+            break;
+        }
+        found.extend(
+            batch[..fetched as usize]
+                .iter()
+                .filter(|p| p.dwFlags & TF_IPP_FLAG_ENABLED != 0)
+                .map(|p| p.clsid),
+        );
+    }
+    Some(found)
 }
 
 /// Switches the input method. The US layout is requested from the foreground window. The Chinese

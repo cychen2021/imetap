@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
+use super::ffi;
 use crate::config::config_path;
 use crate::protocol::mingkuai as mingkuai_wire;
 use crate::state::Ime;
@@ -17,6 +18,21 @@ const SOURCE_DOUBAO: &str = "com.bytedance.inputmethod.doubaoime.pinyin";
 const SOURCE_SHUANGPIN: &str = "com.apple.inputmethod.SCIM.Shuangpin";
 /// The input mode of Mingkuai. Known only when `mingkuai-integrate.enable` is set.
 const SOURCE_MINGKUAI: &str = "org.mingkuai.inputmethod.Mingkuai.Pinyin";
+
+/// The input methods imetap supports on macOS that are enabled input sources (in the input menu).
+/// When the sources cannot be listed, all of them count as enabled.
+pub(super) fn available() -> Vec<Ime> {
+    let enabled = ffi::enabled_sources();
+    [
+        (Ime::Us, SOURCE_US),
+        (Ime::Doubao, SOURCE_DOUBAO),
+        (Ime::Shuangpin, SOURCE_SHUANGPIN),
+    ]
+    .into_iter()
+    .filter(|(_, id)| enabled.is_empty() || enabled.iter().any(|e| e == id))
+    .map(|(ime, _)| ime)
+    .collect()
+}
 
 /// The input source identifier of an input method.
 pub(super) fn source_id(ime: Ime) -> Option<&'static str> {

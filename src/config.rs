@@ -9,8 +9,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
+use anyhow::{Context, Result, bail};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer};
 
 use crate::fade::Fade;
 use crate::reminder::ReminderMode;
@@ -322,9 +323,9 @@ impl Default for TrayConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// The input methods imetap handles: `us`, `pinyin`, `doubao`, `shuangpin`. The others count
-    /// as unknown input methods. Mingkuai is not governed by it.
-    pub enable: Vec<String>,
+    /// The input methods imetap handles, among `us`, `pinyin`, `doubao` and `shuangpin`. The
+    /// others count as unknown input methods. Mingkuai is not governed by it.
+    pub enable: Enable,
     pub tap: TapConfig,
     pub hotkeys: HotkeyConfig,
     pub hud: HudConfig,
@@ -338,15 +339,64 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            enable: ["us", "pinyin", "doubao", "shuangpin"]
-                .map(String::from)
-                .into(),
+            enable: Enable::AllAvailable,
             tap: TapConfig::default(),
             hotkeys: HotkeyConfig::default(),
             hud: HudConfig::default(),
             tray: TrayConfig::default(),
             reminder: ReminderConfig::default(),
             mingkuai: MingkuaiConfig::default(),
+        }
+    }
+}
+
+/// The top-level `enable` key: `"all_available"` or a list of input methods.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Enable {
+    /// The input methods that this platform supports and the system offers.
+    AllAvailable,
+    /// The listed input methods.
+    List(Vec<Ime>),
+}
+
+impl Enable {
+    /// The input methods to handle. `available` lists those the system offers and is called only
+    /// for `AllAvailable`.
+    pub fn resolve(&self, available: impl FnOnce() -> Vec<Ime>) -> Vec<Ime> {
+        match self {
+            Enable::AllAvailable => available(),
+            Enable::List(list) => list.clone(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Enable {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Word(String),
+            List(Vec<String>),
+        }
+        const EXPECTED: &str = r#"expected "all_available" or a list such as ["us", "doubao"]"#;
+        match Raw::deserialize(deserializer).map_err(|_| D::Error::custom(EXPECTED))? {
+            Raw::Word(word) if word == "all_available" => Ok(Enable::AllAvailable),
+            Raw::Word(word) => Err(D::Error::custom(format!(
+                "unknown value `{word}`, {EXPECTED}"
+            ))),
+            Raw::List(names) => names
+                .iter()
+                .map(|name| {
+                    Ime::parse(name)
+                        .filter(|ime| ime.is_governed())
+                        .ok_or_else(|| {
+                            D::Error::custom(format!(
+                                "unknown input method `{name}` (use us, pinyin, doubao, shuangpin)"
+                            ))
+                        })
+                })
+                .collect::<std::result::Result<_, _>>()
+                .map(Enable::List),
         }
     }
 }
@@ -394,23 +444,10 @@ impl Config {
         }
     }
 
-    /// The input methods named by `enable`.
-    pub fn enabled_imes(&self) -> Result<Vec<Ime>> {
-        self.enable
-            .iter()
-            .map(|name| {
-                Ime::parse(name)
-                    .filter(|&ime| ime.is_governed())
-                    .ok_or_else(|| {
-                        anyhow!("enable: unknown input method `{name}` (use us, pinyin, doubao, shuangpin)")
-                    })
-            })
-            .collect()
-    }
-
-    /// The shortcut bound to an input method, `None` when disabled.
+    /// The shortcut bound to an input method. `None` when it has none, or when `enable` turned the
+    /// input method off (`Ime::set_enabled`, which `cli` calls at start).
     pub fn shortcut(&self, ime: Ime) -> Result<Option<Shortcut>> {
-        if !self.enabled_imes()?.contains(&ime) && ime.is_governed() {
+        if !ime.is_enabled() {
             return Ok(None);
         }
         let text = match ime {
@@ -453,7 +490,6 @@ impl Config {
         if self.reminder.idle_secs == 0 || self.reminder.dwell_secs == 0 {
             bail!("reminder.idle_secs and reminder.dwell_secs must be at least 1");
         }
-        self.enabled_imes()?;
         for ime in [Ime::Us, Ime::Pinyin, Ime::Doubao, Ime::Mingkuai] {
             self.shortcut(ime)?;
         }
@@ -626,15 +662,17 @@ mod tests {
     }
 
     #[test]
-    fn enable_picks_the_input_methods() {
-        let c = Config::default();
-        assert_eq!(c.enabled_imes().unwrap().len(), 4);
+    fn enable_takes_all_available_or_a_list() {
+        let available = || vec![Ime::Us, Ime::Doubao];
+        assert_eq!(Config::default().enable.resolve(available), available());
+        let c = Config::parse("enable = \"all_available\"\n").unwrap();
+        assert_eq!(c.enable.resolve(available), available());
         let c = Config::parse("enable = [\"us\", \"pinyin\"]\n").unwrap();
-        assert!(c.shortcut(Ime::Us).unwrap().is_some());
-        assert!(c.shortcut(Ime::Pinyin).unwrap().is_some());
-        assert_eq!(c.shortcut(Ime::Doubao).unwrap(), None);
+        assert_eq!(c.enable.resolve(available), [Ime::Us, Ime::Pinyin]);
+        assert!(Config::parse("enable = \"all\"\n").is_err());
         assert!(Config::parse("enable = [\"nope\"]\n").is_err());
         assert!(Config::parse("enable = [\"mingkuai\"]\n").is_err());
+        assert!(Config::parse("enable = 3\n").is_err());
     }
 
     #[test]

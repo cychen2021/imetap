@@ -3,8 +3,9 @@
 `config.toml` lives in `$XDG_CONFIG_HOME/imetap/`, or the platform default (`%APPDATA%\imetap` on Windows, `~/Library/Application Support/imetap` on macOS). Every key is optional. `imetap init` writes the defaults with comments, the same as [`config.example.toml`](../config.example.toml). Run `imetap daemon reload` after editing.
 
 ```toml
-# The input methods imetap handles: us, pinyin (Windows), doubao, shuangpin (macOS). One left out gets no hotkey and counts as unknown.
-enable = ["us", "pinyin", "doubao", "shuangpin"]
+# The input methods imetap handles, among us, pinyin (Windows), doubao and shuangpin (macOS):
+# "all_available" for those the system offers, or a list such as ["us", "doubao"]. One left out gets no hotkey and counts as unknown.
+enable = "all_available"
 
 [tap]
 enabled = true
@@ -52,3 +53,5 @@ dwell_secs = 300 # resume-and-switch: leaving a window used this long without a 
 ```
 
 On macOS the reminder sees changes of the frontmost application, not of windows within one application.
+
+With `enable = "all_available"`, imetap looks at what the system offers when it starts: on Windows, an English (US) keyboard layout and the Microsoft Pinyin and Doubao profiles turned on in the language settings, and on macOS the input sources in the input menu. After adding an input method to the system, run `imetap daemon reload`.
