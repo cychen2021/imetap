@@ -30,6 +30,8 @@ cargo fmt                                    # format
 
 Commands of `imetap`: `daemon run [--debug]|start|stop|reload`, `switch im <ime>|lang`, `status [-v]`, `autostart enable [--debug]|disable|status`, `paths`, `init`, `config edit [--gui]`. There is no `help` command, only `--help`. `daemon reload` checks the config file and then stops and starts the daemon again (it does not reload inside the running process). The daemon `imetapd` takes only `--debug`.
 
+Detailed user documentation is in `docs/` (`index.md` links the pages). README.md keeps the overview and links there. Update the matching page when a command, a config key or the install steps change.
+
 ## Architecture
 
 `cli.rs` is a clap CLI that delegates to a `platform` module (`imetap::win` or `imetap::mac`). Two thin binaries call it: `main.rs` (`imetap`, the command line, a console program on every platform) and `src/bin/imetapd.rs` (the resident process, GUI subsystem on Windows so that it never shows a console window). `daemon_exe()` in `lib.rs` makes `imetap` start and register the `imetapd` next to it. The platform-independent logic is unit-tested without touching the OS:
