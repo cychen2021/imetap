@@ -12,6 +12,7 @@ pub mod hud;
 pub mod ime;
 pub mod ime_hotkey;
 pub mod mingkuai;
+mod pipe;
 mod tray;
 pub mod uia;
 
