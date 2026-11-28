@@ -4,5 +4,6 @@
 - [Usage](usage.md): the `imetap` commands, the `imetapd` process, the debug log and the tray menu.
 - [Configuration](configuration.md): where `config.toml` lives and every key in it.
 - [Platform notes](platform-notes.md): how it works on Windows and macOS.
+- [Architecture](architecture.md): the modules, the threads and how each platform works, for people who change the code.
 
 See the [README](../README.md) for what imetap does.
